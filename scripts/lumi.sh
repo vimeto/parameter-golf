@@ -73,9 +73,9 @@ case "${1:-help}" in
         ;;
     sync)
         echo "Pushing local changes..."
-        git push
+        git push origin main
         echo "Pulling on LUMI..."
-        ssh lumi "cd ${REMOTE_DIR} && git pull"
+        ssh lumi "cd ${REMOTE_DIR} && git fetch origin main && git reset --hard origin/main"
         ;;
     results)
         ssh lumi "cat ${REMOTE_DIR}/experiments/results.tsv 2>/dev/null"
