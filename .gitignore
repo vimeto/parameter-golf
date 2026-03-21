@@ -13,8 +13,5 @@ logs/
 # Private research strategy and experiment tracking
 RESEARCH_ANALYSIS.md
 TODO.md
-CLAUDE.md
 AGENTS.md
-.claude/
 experiments/
-specs/
