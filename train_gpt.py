@@ -1,9 +1,10 @@
 """
-ROCm-compatible training script for LUMI (AMD MI250X).
-Features gated behind env vars:
-- USE_INT6=1: INT6 post-training quantization (mixed INT6/INT8)
-- USE_INT6_QAT=1: INT6 fake quantization during training (STE)
-- INT6_QAT_START_FRAC=0.0: fraction of training before QAT activates
+ROCm-compatible fork of the baseline train_gpt.py for LUMI (AMD MI250X).
+Changes from upstream:
+- Optional `import kernels` with fallback
+- ROCm-aware SDP backend selection (no cuDNN on AMD)
+- rocm-smi instead of nvidia-smi for GPU info logging
+- Robust fused Adam (fallback if not available)
 """
 
 from __future__ import annotations
@@ -20,12 +21,6 @@ import time
 import uuid
 import zlib
 from pathlib import Path
-
-try:
-    import zstd
-    HAS_ZSTD = True
-except ImportError:
-    HAS_ZSTD = False
 
 import numpy as np
 import sentencepiece as spm
@@ -93,10 +88,6 @@ class Hyperparameters:
     beta2 = float(os.environ.get("BETA2", 0.95))
     adam_eps = float(os.environ.get("ADAM_EPS", 1e-8))
     grad_clip_norm = float(os.environ.get("GRAD_CLIP_NORM", 0.0))
-
-    use_int6 = bool(int(os.environ.get("USE_INT6", "0")))
-    use_int6_qat = bool(int(os.environ.get("USE_INT6_QAT", "0")))
-    int6_qat_start_frac = float(os.environ.get("INT6_QAT_START_FRAC", 0.0))
 
     ttt_lora_rank = int(os.environ.get("TTT_LORA_RANK", 8))
     ttt_lora_lr = float(os.environ.get("TTT_LORA_LR", 0.01))
@@ -306,12 +297,6 @@ INT8_PER_ROW_SCALE_DTYPE = torch.float16
 INT8_CLIP_PERCENTILE = 99.99984
 INT8_CLIP_Q = INT8_CLIP_PERCENTILE / 100.0
 
-# INT6: 6-bit signed [-32, 31], stored in int8
-INT6_QUANT_RANGE = 31
-INT6_FULL_RANGE_PATTERNS = tuple(
-    p for p in os.environ.get("INT6_FULL_RANGE_PATTERNS", "tok_emb").split(",") if p
-)
-
 def tensor_nbytes(t: Tensor) -> int:
     return int(t.numel()) * int(t.element_size())
 
@@ -340,79 +325,6 @@ def quantize_float_tensor(t: Tensor) -> tuple[Tensor, Tensor]:
     scale = torch.tensor(clip_abs / 127.0 if clip_abs > 0 else 1.0, dtype=torch.float32)
     q = torch.clamp(torch.round(torch.clamp(t32, -clip_abs, clip_abs) / scale), -127, 127).to(torch.int8).contiguous()
     return q, scale
-
-def quantize_float_tensor_int6(t: Tensor) -> tuple[Tensor, Tensor]:
-    t32 = t.float()
-    if t32.ndim == 2:
-        clip_abs = (
-            torch.quantile(t32.abs(), INT8_CLIP_Q, dim=1)
-            if t32.numel()
-            else torch.empty((t32.shape[0],), dtype=torch.float32)
-        )
-        clipped = torch.maximum(torch.minimum(t32, clip_abs[:, None]), -clip_abs[:, None])
-        scale = (clip_abs / INT6_QUANT_RANGE).clamp_min(1.0 / INT6_QUANT_RANGE)
-        q = torch.clamp(torch.round(clipped / scale[:, None]), -32, INT6_QUANT_RANGE).to(torch.int8).contiguous()
-        return q, scale.to(dtype=INT8_PER_ROW_SCALE_DTYPE).contiguous()
-    clip_abs = float(torch.quantile(t32.abs().flatten(), INT8_CLIP_Q).item()) if t32.numel() else 0.0
-    scale = torch.tensor(clip_abs / INT6_QUANT_RANGE if clip_abs > 0 else 1.0, dtype=torch.float32)
-    q = torch.clamp(torch.round(torch.clamp(t32, -clip_abs, clip_abs) / scale), -32, INT6_QUANT_RANGE).to(torch.int8).contiguous()
-    return q, scale
-
-
-def quantize_state_dict_int6(state_dict: dict[str, Tensor]):
-    quantized: dict[str, Tensor] = {}
-    scales: dict[str, Tensor] = {}
-    dtypes: dict[str, str] = {}
-    passthrough: dict[str, Tensor] = {}
-    passthrough_orig_dtypes: dict[str, str] = {}
-    qmeta: dict[str, dict[str, object]] = {}
-    stats = dict.fromkeys(
-        ("param_count", "num_tensors", "num_float_tensors", "num_nonfloat_tensors",
-         "baseline_tensor_bytes", "int6_payload_bytes"),
-        0,
-    )
-    for name, tensor in state_dict.items():
-        t = tensor.detach().to("cpu").contiguous()
-        stats["param_count"] += int(t.numel())
-        stats["num_tensors"] += 1
-        stats["baseline_tensor_bytes"] += tensor_nbytes(t)
-        if not t.is_floating_point():
-            stats["num_nonfloat_tensors"] += 1
-            passthrough[name] = t
-            stats["int6_payload_bytes"] += tensor_nbytes(t)
-            continue
-        if t.numel() <= INT8_KEEP_FLOAT_MAX_NUMEL:
-            kept = keep_float_tensor(name, t, passthrough_orig_dtypes)
-            passthrough[name] = kept
-            stats["int6_payload_bytes"] += tensor_nbytes(kept)
-            continue
-        stats["num_float_tensors"] += 1
-        use_int8 = any(pat in name for pat in INT6_FULL_RANGE_PATTERNS)
-        if use_int8:
-            q, s = quantize_float_tensor(t)
-            qmeta[name] = {"scheme": "per_row", "axis": 0, "bits": 8}
-        else:
-            q, s = quantize_float_tensor_int6(t)
-            qmeta[name] = {"scheme": "per_row", "axis": 0, "bits": 6}
-        if s.ndim == 0:
-            qmeta[name]["scheme"] = "per_tensor"
-        quantized[name] = q
-        scales[name] = s
-        dtypes[name] = str(t.dtype).removeprefix("torch.")
-        stats["int6_payload_bytes"] += tensor_nbytes(q) + tensor_nbytes(s)
-    obj: dict[str, object] = {
-        "__quant_format__": "int6_mixed_per_row_v1",
-        "quantized": quantized,
-        "scales": scales,
-        "dtypes": dtypes,
-        "passthrough": passthrough,
-    }
-    if qmeta:
-        obj["qmeta"] = qmeta
-    if passthrough_orig_dtypes:
-        obj["passthrough_orig_dtypes"] = passthrough_orig_dtypes
-    return obj, stats
-
 
 def quantize_state_dict_int8(state_dict: dict[str, Tensor]):
     quantized: dict[str, Tensor] = {}
@@ -486,9 +398,6 @@ def dequantize_state_dict_int8(obj: dict[str, object]) -> dict[str, Tensor]:
             out_t = out_t.to(dtype=getattr(torch, orig_dtype)).contiguous()
         out[name] = out_t
     return out
-
-# INT6 dequantization uses the same format (int8 storage with per-row scales)
-dequantize_state_dict_int6 = dequantize_state_dict_int8
 
 
 # -----------------------------
@@ -571,20 +480,9 @@ class RMSNorm(nn.Module):
 
 
 class CastedLinear(nn.Linear):
-    _int6_qat: bool = False
-
     def forward(self, x: Tensor) -> Tensor:
-        w = self.weight.to(x.dtype)
-        if self._int6_qat and self.training:
-            with torch.no_grad():
-                w32 = w.float()
-                clip_abs = torch.quantile(w32.abs(), INT8_CLIP_Q, dim=1).clamp_min(1e-8)
-                scale = clip_abs / INT6_QUANT_RANGE
-                w_clipped = torch.clamp(w32, -clip_abs[:, None], clip_abs[:, None])
-                w_q = (torch.round(w_clipped / scale[:, None]) * scale[:, None]).to(x.dtype)
-            w = w + (w_q - w).detach()  # STE
         bias = self.bias.to(x.dtype) if self.bias is not None else None
-        return F.linear(x, w, bias)
+        return F.linear(x, self.weight.to(x.dtype), bias)
 
 
 def restore_low_dim_params_to_fp32(module: nn.Module) -> None:
@@ -1210,13 +1108,6 @@ def main() -> None:
     )
     log0(f"seed:{args.seed}")
     log0(f"fused_adam:{use_fused_adam} has_kernels:{HAS_KERNELS}")
-    if args.use_int6:
-        log0(f"int6_quant:enabled full_range_patterns:{INT6_FULL_RANGE_PATTERNS}")
-    if args.use_int6_qat:
-        for m in base_model.modules():
-            if isinstance(m, CastedLinear):
-                m._int6_qat = True
-        log0(f"qat_mode:int6 fake_quant_active:True start_frac:{args.int6_qat_start_frac}")
 
     # -----------------------------
     # DATA LOADER & MODEL WARMUP
@@ -1313,17 +1204,6 @@ def main() -> None:
 
         elapsed_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
         scale = lr_mul(step, elapsed_ms)
-
-        # Late QAT activation
-        if args.use_int6_qat and args.int6_qat_start_frac > 0:
-            frac_done = elapsed_ms / max_wallclock_ms if max_wallclock_ms else step / args.iterations
-            qat_active = frac_done >= args.int6_qat_start_frac
-            for m in base_model.modules():
-                if isinstance(m, CastedLinear):
-                    m._int6_qat = qat_active
-            if qat_active and step > 0 and step % args.train_log_every == 0:
-                log0(f"late_qat_switchover_step:{step}")
-
         zero_grad_all()
         train_loss = torch.zeros((), device=device)
         for micro_step in range(grad_accum_steps):
@@ -1388,7 +1268,6 @@ def main() -> None:
         log0(f"Code size: {code_bytes} bytes")
         log0(f"Total submission size: {model_bytes + code_bytes} bytes")
 
-    # --- INT8 quantization (always, for comparison) ---
     quant_obj, quant_stats = quantize_state_dict_int8(base_model.state_dict())
     quant_buf = io.BytesIO()
     torch.save(quant_obj, quant_buf)
@@ -1407,53 +1286,12 @@ def main() -> None:
         )
         log0(f"Total submission size int8+zlib: {quant_file_bytes + code_bytes} bytes")
 
-    # --- INT6 quantization (when USE_INT6=1) ---
-    if args.use_int6:
-        int6_obj, int6_stats = quantize_state_dict_int6(base_model.state_dict())
-        int6_buf = io.BytesIO()
-        torch.save(int6_obj, int6_buf)
-        int6_raw = int6_buf.getvalue()
-        if HAS_ZSTD:
-            int6_blob = zstd.ZstdCompressor(level=22).compress(int6_raw)
-            compress_label = "zstd22"
-        else:
-            int6_blob = zlib.compress(int6_raw, level=9)
-            compress_label = "zlib9"
-        if master_process:
-            with open("final_model.int6.ptz", "wb") as f:
-                f.write(int6_blob)
-            int6_file_bytes = os.path.getsize("final_model.int6.ptz")
-            code_bytes = len(code.encode("utf-8"))
-            ratio6 = int6_stats["baseline_tensor_bytes"] / max(int6_stats["int6_payload_bytes"], 1)
-            log0(
-                f"Serialized model int6+{compress_label}: {int6_file_bytes} bytes "
-                f"(payload:{int6_stats['int6_payload_bytes']} payload_ratio:{ratio6:.2f}x)"
-            )
-            log0(f"Total submission size int6+{compress_label}: {int6_file_bytes + code_bytes} bytes")
-
-    # --- Roundtrip validation (use INT6 if available, else INT8) ---
-    if args.use_int6:
-        if distributed:
-            dist.barrier()
-        with open("final_model.int6.ptz", "rb") as f:
-            rt_blob = f.read()
-        if HAS_ZSTD:
-            rt_state = torch.load(io.BytesIO(zstd.ZstdDecompressor().decompress(rt_blob)), map_location="cpu")
-        else:
-            rt_state = torch.load(io.BytesIO(zlib.decompress(rt_blob)), map_location="cpu")
-        base_model.load_state_dict(dequantize_state_dict_int6(rt_state), strict=True)
-        rt_label = f"int6_{compress_label}"
-        rt_file = "final_model.int6.ptz"
-    else:
-        if distributed:
-            dist.barrier()
-        with open("final_model.int8.ptz", "rb") as f:
-            rt_blob = f.read()
-        rt_state = torch.load(io.BytesIO(zlib.decompress(rt_blob)), map_location="cpu")
-        base_model.load_state_dict(dequantize_state_dict_int8(rt_state), strict=True)
-        rt_label = "int8_zlib"
-        rt_file = "final_model.int8.ptz"
-
+    if distributed:
+        dist.barrier()
+    with open("final_model.int8.ptz", "rb") as f:
+        quant_blob_disk = f.read()
+    quant_state = torch.load(io.BytesIO(zlib.decompress(quant_blob_disk)), map_location="cpu")
+    base_model.load_state_dict(dequantize_state_dict_int8(quant_state), strict=True)
     torch.cuda.synchronize()
     t_qeval = time.perf_counter()
     q_val_loss, q_val_bpb = eval_val(
@@ -1469,14 +1307,11 @@ def main() -> None:
         is_boundary_token_lut,
     )
     torch.cuda.synchronize()
-    rt_bytes = os.path.getsize(rt_file) if master_process else 0
     log0(
-        f"final_{rt_label}_roundtrip val_loss:{q_val_loss:.4f} val_bpb:{q_val_bpb:.4f} "
+        f"final_int8_zlib_roundtrip val_loss:{q_val_loss:.4f} val_bpb:{q_val_bpb:.4f} "
         f"eval_time:{1000.0 * (time.perf_counter() - t_qeval):.0f}ms"
     )
-    log0(f"final_{rt_label}_roundtrip_exact val_loss:{q_val_loss:.8f} val_bpb:{q_val_bpb:.8f}")
-    if master_process:
-        log0(f"artifact_bytes:{rt_bytes}")
+    log0(f"final_int8_zlib_roundtrip_exact val_loss:{q_val_loss:.8f} val_bpb:{q_val_bpb:.8f}")
 
     # LoRA test-time training evaluation (the competition score)
     torch._dynamo.reset()
