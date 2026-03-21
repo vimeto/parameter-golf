@@ -1,0 +1,10 @@
+{
+    "team": "omat",
+    "description": "ROCm-compatible baseline fork",
+    "platform": "LUMI MI250X",
+    "train_script": "train_gpt.py",
+    "val_bpb": null,
+    "val_bpb_postquant": null,
+    "artifact_bytes": null,
+    "notes": "placeholder - update after first successful run"
+}
