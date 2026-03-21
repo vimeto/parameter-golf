@@ -23,23 +23,49 @@ OpenAI Parameter Golf challenge: train the best language model (lowest bits-per-
 - Evaluation <= 10 min on 8xH100 SXM (separate budget, can train on val data)
 - BPB metric on FineWeb validation set
 
-## CRITICAL: Code Modification Rules
+## CRITICAL: Code Architecture
 
-- **NEVER modify `records/our_submission/` for experimentation.** Multiple code paths must run concurrently.
-- The train script on LUMI (`~/parameter-golf/train_gpt.py`) is the single source that ALL runs execute. Feature flags (env vars) control which code paths are active.
-- To add a new feature: edit `train_gpt.py` (root), gate it behind an env var, sync to LUMI, then reference the env var in spec files.
-- Exploration runs are 8 parallel 1-GPU jobs — each with different env vars — sharing the SAME code.
+### Root `train_gpt.py` = Proven Shared Infrastructure
+- **ONLY contains proven, graduated features** — things every run needs
+- ROCm detection + torch.compile, data loading, DDP, base model (GPT/Block/Attention/MLP), Muon optimizer, eval pipeline (BPB, TTT LoRA), INT8 serialization, logging
+- Features only get merged into root AFTER validation proves they help
+- `records/our_submission/` is the frozen upstream-compatible snapshot — do NOT modify it
 
-## Development Workflow
+### Per-Experiment Scripts = Exploration
+- Each exploration run gets its OWN `train_gpt.py` copy under `specs/batchN/`
+- Copies are generated from root, then modified for the specific experiment
+- The spec file references each via `TRAIN_SCRIPT=specs/batchN/runM.py`
+- This allows 8 completely different code paths to run in parallel
+- Validation runs ALSO use `TRAIN_SCRIPT` to point to the winning experiment's script
 
-1. Edit `train_gpt.py` (root) — gate new features behind env vars
-2. Local smoke test via MLX (200 steps, ~15 min on M2 Max)
-3. `scripts/lumi.sh sync` to push code to LUMI
-4. Create spec file in `specs/` with 8 experiment configs
-5. Submit to LUMI via `scripts/lumi.sh submit ...`
-6. Read results via `scripts/lumi.sh logs <job_id>`
-7. Record results in `experiments/results.tsv`
-8. Follow research directions in parent `TODO.md`
+### Graduating Features
+When an experiment wins validation and is confirmed better than global best:
+1. Merge the winning changes back into root `train_gpt.py`
+2. Commit with a clear message about what was proven
+3. All future experiment copies inherit the improvement
+
+## Exploration Batch Generation (4-Step Process)
+
+### Step 1: Data-Driven Analysis
+- Read `experiments/state.json`, exploration/validation logs, `TODO.md`
+- Identify what worked, what failed, what's untested
+- Determine the highest-priority research direction
+
+### Step 2: Conceptual Run List
+- Design 8 experiments: 1 control (reproduce best known), 6 variations, 1 wildcard
+- Each run has a clear hypothesis and expected outcome
+- Document the rationale before writing any code
+
+### Step 3: Generate Scripts via Subagents
+- Launch subagents in parallel (one per script or batched)
+- Each subagent: copies root `train_gpt.py` → applies the specific modification
+- Scripts saved to `specs/batchN/runM.py`
+
+### Step 4: Validate and Submit
+- `python3 -c "import ast; ast.parse(open('specs/batchN/runM.py').read())"` for each
+- Create spec file `specs/batchN/spec.txt` referencing all 8 scripts
+- `git add`, `git commit`, `scripts/lumi.sh sync`
+- `scripts/lumi.sh submit scripts/slurm/lumi_packed.sh specs/batchN/spec.txt`
 
 ## LUMI Supercomputer
 
@@ -55,23 +81,20 @@ OpenAI Parameter Golf challenge: train the best language model (lowest bits-per-
 - **ALWAYS use torch.compile** — enabled via `shape_padding=False` + `fullgraph=False` in our ROCm fork. Gives ~2x speedup over eager mode.
 - **Token-parity with 8xH100 requires ~41 min on 8xMI250** — the benchmark processes 6.8B tokens in 10 min on 8xH100 (11.4M tok/s). Our 8xMI250 with compile does 2.80M tok/s (187ms/step with 524K batch), so set `MAX_WALLCLOCK_SECONDS=2500` (~42 min) for comparable runs. We are 4.1x slower than 8xH100.
 - For quick exploration sweeps, use `lumi_packed.sh` with 8x 1-GPU runs (50 min each, ~360M tokens per run — directional signal only).
-- For proper validation runs, use `lumi_sequential.sh` with 8 GPUs and 75 min wallclock per experiment.
+- For proper validation runs, use `lumi_train.sh` with `TRAIN_SCRIPT=specs/batchN/runM.py NUM_GPUS=8`.
 - `dev-g` has faster queue times than `standard-g` — use for quick tests.
 
 ## Autoresearch Loop
 
-Two-tier continuous experimentation:
-- **Node A (exploration):** 8x 1-GPU packed runs, 50min train + 10min eval. Directional signal only.
-- **Node B (validation):** 1x 8-GPU full node, 45min train (2700s). Token-parity with H100 benchmark.
-
-Both nodes run in parallel. After each exploration batch, the best config is promoted to validation.
+Two-tier continuous experimentation — **both nodes must be running at all times**:
+- **Node A (exploration):** 8x 1-GPU packed runs, 50min train + 10min eval. Each run has its own train_gpt.py.
+- **Node B (validation):** 1x 8-GPU full node, 45min train (2700s). Uses the winning experiment's script via TRAIN_SCRIPT.
 
 State tracked in:
 - `experiments/state.json` — current phase, best scores, running jobs
-- `experiments/exploration_log.md` — all exploration batches with results and promotion decisions
+- `experiments/exploration_log.md` — all exploration batches with results
 - `experiments/validation_log.md` — all validation runs with comparison to global best
 
-Every run with a feature flag must pass an integrity check (specific log line proving the feature is active).
 See `.claude/skills/experiment/SKILL.md` for the full protocol.
 
 ## Local Testing (M2 Max, 64GB)
@@ -88,16 +111,16 @@ Local numbers are ~2-3x worse than H100 due to undertraining. Use for directiona
 
 ## File Structure
 
-- `train_gpt.py` — Baseline training script (CUDA)
-- `train_gpt_mlx.py` — Baseline training script (MLX/Mac)
-- `records/our_submission/` — Our working submission
+- `train_gpt.py` — Base training script (ROCm-compatible, proven features only)
+- `train_gpt_mlx.py` — MLX variant for local testing
+- `records/our_submission/` — Frozen upstream-compatible submission (do NOT modify)
+- `specs/batchN/` — Per-batch experiment scripts and spec files
 - `scripts/lumi.sh` — LUMI SSH bridge
 - `scripts/slurm/` — SLURM job scripts
-- `experiments/results.tsv` — Experiment tracking
-- `experiments/runs/` — Saved improved run artifacts
+- `experiments/` — State, logs, results (gitignored, local tracking)
 
 ## Skills
 
 - **lumi-submit** (`.claude/skills/lumi-submit/SKILL.md`) — Submit and manage jobs on LUMI supercomputer
-- **experiment** (`.claude/skills/experiment/SKILL.md`) — Autoresearch experiment loop: propose, test, measure, record
+- **experiment** (`.claude/skills/experiment/SKILL.md`) — Autoresearch experiment loop
 - **local-test** (`.claude/skills/local-test/SKILL.md`) — Quick MLX smoke tests on M2 Max
