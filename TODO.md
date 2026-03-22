@@ -14,6 +14,24 @@ At 16MB, the winner will be **absurdly parameter-efficient** — not just "a goo
 
 The theme: **structure beats parameters**. A 16MB model with structured ops can have the effective capacity of a much larger model.
 
+### The Winning Architecture (Hypothesis)
+The winner likely combines ALL of these:
+- **Deep recurrence** (shared weights + LoRA differentiation) for effective depth 20-40+
+- **Sparse attention + MLP** (Fastfood/butterfly/FFT) for O(d) params per layer
+- **Aggressive quantization** (ternary/INT4) on the few stored params
+- **MoE routing** for conditional computation (many experts, few active per token)
+- **Longer sequence length** enabled by the param savings
+
+This combination gives a model that is effectively "much larger" (100M+ effective params) while storing only a few MB of unique weights. Each technique multiplies the others' benefit.
+
+### Deep Mixture-of-Experts (MoE) [HIGH PRIORITY]
+MoE is a natural fit for 16MB: store many small experts, route tokens to a few at a time.
+- Expert size can be tiny (Fastfood or butterfly-based)
+- Router is very cheap (~dim*num_experts params)
+- With recurrence: same experts used at different loops = massive effective capacity
+- Top-2 routing with load balancing aux loss
+- Could combine with ternary quantization for even more experts
+
 ## Phase 0: Infrastructure [DONE]
 
 - [x] SLURM training scripts + LUMI SSH bridge
