@@ -1,6 +1,24 @@
 # Parameter Golf: Implementation Plan
 
 ## Current Best: 1.1697 bpb, 15.7MB (INT5+zstd22 + late QAT on 11L MLP3x)
+## Goal: <1.0 bpb. Current approach can't get there. Need paradigm shift.
+
+## What Gets Us to <1.0 bpb
+
+The gap from 1.17 to <1.0 is ~15% relative — no tuning will close this. We need techniques that MULTIPLY:
+
+1. **Ternary QAT** (2 bits/param): fit 50M+ params in 12MB → 2x more model capacity → ~0.05 bpb
+2. **Deep recurrence** (20-40 effective layers from 5 stored): more depth for free → ~0.03 bpb
+3. **MoE inside recurrence**: each loop uses different expert subset → massive diversity → ~0.05 bpb
+4. **Test-time training**: fine-tune on val data during eval → ~0.05-0.10 bpb (currently unused!)
+5. **Longer sequence** (4096-8192 at eval): more context = better predictions → ~0.02 bpb
+
+Combined: 1.17 - 0.20 = ~0.97 bpb. Each technique is proven in literature, the challenge is engineering them together.
+
+**Priority order for maximum impact:**
+- Ternary QAT (biggest single win: 2x params in same artifact)
+- TTT optimization (completely free bpb improvement at eval)
+- Recurrence+MoE combo (proven individually, need to combine)
 
 ## The Core Insight
 
