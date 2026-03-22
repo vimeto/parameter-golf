@@ -1317,7 +1317,10 @@ def main() -> None:
         compiled_model = torch.compile(base_model, mode="default", fullgraph=False)
     else:
         compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True)
-    model: nn.Module = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
+    ddp_kwargs = dict(device_ids=[local_rank], broadcast_buffers=False)
+    if args.recurrent_blocks > 0:
+        ddp_kwargs["find_unused_parameters"] = True
+    model: nn.Module = DDP(compiled_model, **ddp_kwargs) if distributed else compiled_model
 
     block_named_params = list(base_model.blocks.named_parameters())
     matrix_params = [
