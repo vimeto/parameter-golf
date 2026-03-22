@@ -678,6 +678,7 @@ class CausalSelfAttention(nn.Module):
 # FASTFOOD MLP
 # -----------------------------
 
+@torch.compiler.disable
 def fast_walsh_hadamard(x: Tensor) -> Tensor:
     """Fast Walsh-Hadamard transform along last dimension. Last dim must be power of 2."""
     n = x.shape[-1]
@@ -730,6 +731,7 @@ class FastfoodLinear(nn.Module):
             self._G = torch.randn(self.padded_dim, generator=gen).to(device)
             self._cached_device = device
 
+    @torch.compiler.disable
     def forward(self, x: Tensor) -> Tensor:
         self._ensure_buffers(x.device)
         orig_dtype = x.dtype
