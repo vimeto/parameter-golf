@@ -1,0 +1,29 @@
+# Batch 28: Port of the 1.1428 bpb leaderboard winner to ROCm
+# This is the ACTUAL winning script with minimal ROCm changes.
+# Includes: 10L, mixed INT5/INT6, BigramHash 10240, SWA, WD=0.04,
+# sliding window eval (stride=64), magnitude pruning, SmearGate, ortho init.
+# All techniques tuned together, not bolted on.
+
+# Run 0: Winner config exactly as published (10L, BigramHash 10240)
+0 TRAIN_SCRIPT=specs/batch28/run0.py RUN_ID=s28_winner_10L ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100
+
+# Run 1: Winner + 11L (can we add a layer? mixed quant should save space)
+1 TRAIN_SCRIPT=specs/batch28/run1.py RUN_ID=s28_winner_11L ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 NUM_LAYERS=11
+
+# Run 2: Winner but with BigramHash 4096 (smaller, does size matter?)
+2 TRAIN_SCRIPT=specs/batch28/run2.py RUN_ID=s28_winner_bh4096 ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 BIGRAM_VOCAB_SIZE=4096
+
+# Run 3: Winner but without SWA (isolate SWA contribution)
+3 TRAIN_SCRIPT=specs/batch28/run3.py RUN_ID=s28_winner_noswa ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 SWA_ENABLED=0
+
+# Run 4: Winner but seq2048 (our proven best seq length)
+4 TRAIN_SCRIPT=specs/batch28/run4.py RUN_ID=s28_winner_seq2048 ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 TRAIN_SEQ_LEN=2048
+
+# Run 5: Winner config + momentum=0.99 warmup
+5 TRAIN_SCRIPT=specs/batch28/run5.py RUN_ID=s28_winner_mom ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 MUON_MOMENTUM=0.99 MUON_MOMENTUM_WARMUP_STEPS=1500
+
+# Run 6: Winner but no magnitude pruning (USE_MAG_PRUNE=0 if env var exists)
+6 TRAIN_SCRIPT=specs/batch28/run6.py RUN_ID=s28_winner_noprune ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100
+
+# Run 7: Winner + our late QAT (combine winning script with our best technique)
+7 TRAIN_SCRIPT=specs/batch28/run7.py RUN_ID=s28_winner_full ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 TRAIN_SEQ_LEN=2048 MUON_MOMENTUM=0.99 MUON_MOMENTUM_WARMUP_STEPS=1500
