@@ -1,0 +1,29 @@
+# Batch 30: Winner family + XSA + eval-time adaptation
+# Base: ported 1.1428 winner (10L, mixed INT5/INT6, BigramHash, SWA, WD, sliding eval)
+# Note: TTT not in winner script yet — runs 3,4,6 are placeholders (same as control/XSA)
+# Note: winner already has sliding window eval built-in, so "docslide" runs are just controls
+# Effective experiments: control, XSA(4), XSA(all), XSA(5), seq2048 variants, 11L shrunk
+
+# Run 0: Winner control (exact port, 10L)
+0 TRAIN_SCRIPT=specs/batch30/run0_control.py RUN_ID=s30_winner_ctrl ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100
+
+# Run 1: Winner + XSA last 4 (PR #349 config)
+1 TRAIN_SCRIPT=specs/batch30/run1_xsa.py RUN_ID=s30_xsa4 ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 XSA_LAST_N=4
+
+# Run 2: Winner + XSA all 10 layers
+2 TRAIN_SCRIPT=specs/batch30/run5_xsa_docslide.py RUN_ID=s30_xsa10 ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 XSA_LAST_N=10
+
+# Run 3: Winner + XSA last 5
+3 TRAIN_SCRIPT=specs/batch30/run6_xsa_ttt.py RUN_ID=s30_xsa5 ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 XSA_LAST_N=5
+
+# Run 4: Winner + XSA last 2 (minimal)
+4 TRAIN_SCRIPT=specs/batch30/run1_xsa.py RUN_ID=s30_xsa2 ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 XSA_LAST_N=2
+
+# Run 5: Winner + XSA last 7
+5 TRAIN_SCRIPT=specs/batch30/run5_xsa_docslide.py RUN_ID=s30_xsa7 ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 XSA_LAST_N=7
+
+# Run 6: Winner + seq2048 (our proven seq length on winner base)
+6 TRAIN_SCRIPT=specs/batch30/run2_docslide.py RUN_ID=s30_seq2048 ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 TRAIN_SEQ_LEN=2048
+
+# Run 7: Winner 11L + smaller bigram (fund extra layer)
+7 TRAIN_SCRIPT=specs/batch30/run7_11L.py RUN_ID=s30_11L_shrunk ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 NUM_LAYERS=11 BIGRAM_VOCAB_SIZE=8192 BIGRAM_DIM=96
