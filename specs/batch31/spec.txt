@@ -1,0 +1,30 @@
+# Batch 31: Winner + TTT LoRA — legal eval-time adaptation to beat leaderboard
+# Val 16 proved winner works on MI250 (1.1441 bpb). Now add TTT for eval-time gains.
+# TTT gives ~-0.015 bpb on our INT5 base. On the winner stack: expect 1.13 range!
+# NOTE: TTT makes 1-GPU slow. Use relative rankings, validate best on 8-GPU.
+# NOTE: Sliding window eval on 1-GPU is 969K windows = very slow.
+#        Results may only show training bpb + non-sliding roundtrip for some runs.
+
+# Run 0: Winner + TTT default (rank=8, lr=0.01, chunk=256)
+0 TRAIN_SCRIPT=specs/batch31/run0.py RUN_ID=s31_ttt_r8 ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100
+
+# Run 1: Winner + TTT rank=16
+1 TRAIN_SCRIPT=specs/batch31/run1.py RUN_ID=s31_ttt_r16 ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 TTT_LORA_RANK=16
+
+# Run 2: Winner + XSA(4) + TTT default
+2 TRAIN_SCRIPT=specs/batch31/run2.py RUN_ID=s31_xsa4_ttt ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 XSA_LAST_N=4
+
+# Run 3: Winner + XSA(all 10) + TTT default
+3 TRAIN_SCRIPT=specs/batch31/run3.py RUN_ID=s31_xsa10_ttt ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 XSA_LAST_N=10
+
+# Run 4: Winner + TTT rank=32 (more capacity)
+4 TRAIN_SCRIPT=specs/batch31/run4.py RUN_ID=s31_ttt_r32 ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 TTT_LORA_RANK=32
+
+# Run 5: Winner + TTT chunk=512 (faster eval, slightly less quality)
+5 TRAIN_SCRIPT=specs/batch31/run5.py RUN_ID=s31_ttt_c512 ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 TTT_CHUNK_SIZE=512
+
+# Run 6: Winner + XSA(5) + TTT (optimal combo)
+6 TRAIN_SCRIPT=specs/batch31/run6.py RUN_ID=s31_xsa5_ttt ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 XSA_LAST_N=5
+
+# Run 7: Winner 11L + TTT (shrunk bigram to fund 11th layer)
+7 TRAIN_SCRIPT=specs/batch31/run7.py RUN_ID=s31_11L_ttt ITERATIONS=20000 TRAIN_BATCH_TOKENS=65536 MAX_WALLCLOCK_SECONDS=3000 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 NUM_LAYERS=11 BIGRAM_VOCAB_SIZE=8192 BIGRAM_DIM=96
