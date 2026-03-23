@@ -33,14 +33,29 @@ OpenAI Parameter Golf challenge: train the best language model (lowest bits-per-
 
 ### Per-Experiment Scripts = Exploration
 - Each exploration run gets its OWN `train_gpt.py` copy under `specs/batchN/`
-- Copies are generated from root, then modified for the specific experiment
+- The current backbone is `specs/batch28/run_winner_rocm.py` (ported H100 leaderboard winner). **All new experiments should build from the winner family, not the stale root.**
 - The spec file references each via `TRAIN_SCRIPT=specs/batchN/runM.py`
-- This allows 8 completely different code paths to run in parallel
 - Validation runs ALSO use `TRAIN_SCRIPT` to point to the winning experiment's script
+- IF something promising hasn't worked after 2 iterations, stop and research SOTA before trying again. Use a subagent to read papers/repos (clone to /tmp).
+
+### Exploration Eval Protocol
+Winner-family scripts have slow sliding eval (969K windows on 1 GPU). Use a fast proxy:
+- Post-quant serialization + artifact bytes (always report)
+- Standard (non-sliding) roundtrip bpb as the fast proxy metric
+- NO TTT in packed exploration (too slow — reserve for 8-GPU validation)
+- NO full sliding eval in packed exploration (too slow — use for 8-GPU only)
+- Use relative rankings between runs, not absolute bpb numbers
+- Separate three metrics in logs: `standard_postquant_bpb`, `sliding_bpb`, `ttt_bpb`
+
+### Validation Priority
+1. Don't wait for noisy 1-GPU results to block validation — submit promising configs immediately
+2. Don't promote old-base runs before winner-family runs
+3. Legal eval-time adaptation (TTT) is the highest-upside path to beat the leaderboard
+4. Val-only training during training phase is AGAINST THE RULES — only TTT during eval
 
 ### Graduating Features
 When an experiment wins validation and is confirmed better than global best:
-1. Merge the winning changes back into root `train_gpt.py`
+1. Merge the winning changes back into the winner backbone script
 2. Commit with a clear message about what was proven
 3. All future experiment copies inherit the improvement
 
