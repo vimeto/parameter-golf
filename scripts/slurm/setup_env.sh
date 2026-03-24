@@ -7,7 +7,7 @@
 # - Caches:   /scratch/project_462001163/$USER/pgolf_cache (scratch - large, auto-purged)
 # - Pip pkgs: /projappl/project_462001163/$USER/python_user (projappl - persistent)
 
-set -euo pipefail
+# Note: no set -euo pipefail here — this file is sourced, caller controls error handling
 
 # =============================================================================
 # Configuration
