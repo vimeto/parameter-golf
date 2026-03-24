@@ -1,90 +1,84 @@
 # Parameter Golf: Implementation Plan
 
-## Current Best: 1.1441 bpb, 15.77MB (winner port validated on MI250)
-## Legal Best with TTT: ~1.13 bpb (estimated, val17 running)
+## Two Lanes
 
-## Guiding Rule
+### Record Lane (MAX_WALLCLOCK <= 3000s on MI250, ~1.05x H100 token budget)
+- **Current best: 1.1324 bpb** (val19, specs/batch33/run_new_winner.py, wd=4000, 15.84MB)
+- **Upstream SOTA: 1.1233 bpb** (PR #414, 8xH100 600s)
+- **Gap: +0.009** — mostly from fewer steps (MI250 slower) and no FlashAttention 3
 
-**Stop spending exploration budget on ideas that already lost clearly or cannot be ranked reliably on 1-GPU packed runs.** Every batch must produce actionable signal within the packed-run time budget.
+### Non-Record Lane (research, MAX_WALLCLOCK > 3000s)
+- **Current best: 1.1164 bpb** (val24, 6000s, ~18000 steps)
+- NOT leaderboard-valid. Useful for: finding the architecture ceiling, studying scaling curves, developing techniques to port back to record lane.
+
+### Invalid Runs (do NOT cite as records)
+- val13 (0.9815): TRAIN_ON_VAL=1 violates rules
+- val17 TTT: broken (1.3185), standard eval fine
 
 ## Immediate Priorities
 
-### 1. Fix Exploration Eval Protocol [CRITICAL]
-Winner-family scripts are too slow for full sliding eval on 1 GPU (969K windows). Need a fast proxy:
-- Post-quant serialization + artifact bytes (already works)
-- Fixed sliding-window subset on a small validation slice (NOT full eval)
-- No TTT in packed exploration (too slow, save for 8-GPU validation)
-- Explicit `proxy_bpb` logging so `packed-results` can parse modern scripts
-- Use relative rankings, not absolute numbers
+### 1. Clean Bookkeeping
+- [x] Fix state.json to separate record/non-record lanes
+- [ ] Backfill validations 18-24 into validation_log.md
+- [ ] Graduate proven features from new SOTA into root train_gpt.py
+- [ ] Ensure all three metrics (standard, sliding, TTT) are clearly labeled
 
-### 2. Validate Winner Family on 8 GPUs [IN PROGRESS]
-- [x] Val 16: exact winner port → **1.1441 bpb** (matches H100 leaderboard)
-- [ ] Val 17: winner + TTT LoRA (submitted, job 16955596)
-- [ ] Val 18: winner + XSA (after batch 31 shows best XSA depth)
+### 2. Record-Lane Improvement
+The record-lane best (1.1324) uses the 2026-03-22 SOTA port. To improve:
+- [ ] Fix TTT on the new SOTA backbone (broken in val17 — biggest potential win)
+- [ ] Try legal causal eval-time adaptation (document-isolated sliding + TTT)
+- [ ] Small training/export refinements (GPTQ-lite clip search tuning, better EMA settings)
+- [ ] Keep MAX_WALLCLOCK <= 3000s for all record-lane validations
 
-### 3. Eval-Time Adaptation (Legal TTT) [HIGHEST UPSIDE]
-The invalid val-only results proved the remaining gain lives in adaptation/memorization. TTT is the legal version:
-- [ ] Document-isolated sliding eval on winner backbone
-- [ ] TTT sweep on winner backbone (rank, target layers, chunk size, eval context, batch size)
-- [ ] Tune under the 10-minute eval budget on 8-GPU
-- [ ] TTT validation-only mode (skip exploration, go straight to 8-GPU)
+### 3. Legal Eval-Time Adaptation [HIGHEST UPSIDE]
+The invalid val-only run (0.9815) proves massive gains exist in adaptation. Legal versions:
+- [ ] TTT LoRA: fix the bug, then sweep rank/LR/target-layers on new SOTA backbone
+- [ ] Titans-style memory / fast-weight mechanism at eval time
+- [ ] Document-isolated sliding eval with causal adaptation
+- [ ] Stay within 10-minute eval budget
 
-### 4. Winner-Family Exploration [NEXT BATCH]
-All 8 runs inside winner family, using fast proxy eval:
-- Control (exact winner port)
-- XSA last 2/4/5 layers
-- No SWA (isolate SWA contribution on MI250)
-- Smaller bigram sidecar (BIGRAM_VOCAB_SIZE=8192)
-- Smaller bigram projection (BIGRAM_DIM=96)
-- 11L funded by byte cuts (reduced sidecar + slightly smaller MLP)
+### 4. H100 Confirmation
+- [ ] Run record-lane candidate on H100 only when clearly below 1.1228 on MI250 (record lane)
+- [ ] Or when legal eval-time method shows >0.005 nat margin
 
-Answers: does XSA help on the right backbone? Is SWA helping on MI250? Should bytes go to bigram sidecar or extra layer?
+## What's Proven on MI250
 
-## Experiment Bookkeeping
+| Technique | Best bpb | Lane | Script |
+|-----------|----------|------|--------|
+| Old winner port (10L) | 1.1441 | Record | specs/batch28/run_winner_rocm.py |
+| New SOTA port (11L, wd4000) | 1.1324 | Record | specs/batch33/run_new_winner.py |
+| Extended wallclock (6000s) | 1.1164 | Non-record | specs/batch33/run_new_winner.py |
 
-Separate three metrics in all logs:
-1. **standard post-quant bpb** — the quick roundtrip metric (always available)
-2. **sliding post-quant bpb** — stride=64, full val set (slow, 8-GPU only)
-3. **TTT bpb** — test-time LoRA fine-tuning (8-GPU only, within 10-min eval budget)
+## Scaling Curve (non-record)
 
-## What's Working (Proven on MI250)
+| Wallclock | Steps | Sliding bpb | Delta |
+|-----------|-------|-------------|-------|
+| 2700s | ~8200 | 1.1324 | baseline |
+| 3600s | ~10800 | 1.1265 | -0.006 |
+| 4500s | ~13800 | 1.1215 | -0.005 |
+| 6000s | ~18000 | 1.1164 | -0.005 |
 
-| Technique | Source | Validated bpb | Status |
-|-----------|--------|--------------|--------|
-| 10L MLP3x + full winner stack | batch 28 / val 16 | **1.1441** | CURRENT BEST |
-| 11L MLP3x + INT5 + late QAT + TTT | batch 9 / val 5 | 1.1543 | Previous best |
-| Sliding window eval (stride=64) | winner script | Built-in | Needs 8-GPU |
-| Mixed INT5/INT6 quantization | winner script | Part of 1.1441 | Proven |
-| BigramHash 10240 | winner script | Part of 1.1441 | Proven |
-| SWA (start_frac=0.35) | winner script | Part of 1.1441 | Needs isolation |
-| XSA (last 4 layers) | PR #349 | 1.1399 on H100 | Testing |
+~0.005 bpb per +1500s. Curve still improving but will plateau.
+
+## Longer-Term Directions
+
+### Ambitious: Legal Causal Adaptation / Memory
+- Titans-style memory / fast-weight eval-time mechanism
+- Hybrid dense-trunk + recurrent-tail model
+- This is the only credible path to sub-1.0 within rules
+
+### Architecture
+- Keep current 11-layer upstream stack
+- Next gains come from eval/export discipline, not architecture resets
+- Hybrid recurrence only after legal adaptation path is explored
+
+### Low-Bit Quantization
+- Third priority unless genuinely better recipe (ParetoQ, PTQ1.61)
+- Naive ternary/INT4 already proven insufficient
 
 ## Explicitly Paused
-
-Do not spend exploration budget on these until winner-family path is stable:
-- Full-model recurrence (DDP crashes, +0.028 gap even in exploration)
-- Ternary/BitNet QAT (+0.066 gap, naive approach failed)
-- Fastfood / block-diagonal / butterfly MLP replacements (torch.compile incompatible or too lossy)
-- Old INT5-base ablations (superseded by winner family)
-- "Kitchen sink" technique mixing (batch 24 showed bolting-on doesn't work)
-
-## Longer-Term Directions (Reopen After Winner Path Stable)
-
-### Hybrid Recurrence
-Strong dense trunk + shared recurrent tail with loop-specific deltas on ALL linear layers (not just Q/V). Not full-model recurrence.
-
-### Memory-Augmented Models
-Shared core + fast weights / online memory / legal test-time state. More plausible than plain weight sharing.
-
-### Dynamic-Depth Recurrence
-Let only hard tokens take extra loops. Better compute budget usage than looping every token equally.
-
-### Compression-Aware Architecture Search
-Keep reallocating bytes between layers, MLP width, bigram sidecar, FP16-sensitive tensors, and pruning. This is where most real gains are coming from.
-
-### Better Low-Bit Quantization
-Only with a substantially better training/export pipeline. Naive ternary is not worth more batches.
-
-## Throughput Note
-
-We run **8 experiments per hour** on LUMI (8x 1-GPU packed). Both exploration and validation nodes should run at all times. At this throughput, we can test 50-100 ideas per day. But only if the exploration protocol produces actionable signal — fix the eval proxy first.
+- Full-model recurrence (DDP crashes, gap too large)
+- Ternary/BitNet (gap too large)
+- Fastfood / block-diagonal MLP (compile/quality issues)
+- Old INT5-base ablations (superseded by new SOTA)
+- Calling non-record runs "better than leaderboard"

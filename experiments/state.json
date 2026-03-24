@@ -1,0 +1,25 @@
+{
+  "record_lane": {
+    "constraint": "MAX_WALLCLOCK <= 3000s on 8xMI250 (~1.05x H100 token budget)",
+    "best_bpb_sliding": 1.1441,
+    "best_bpb_standard": 1.1441,
+    "best_run": "val16 (job 16949659) — ported 2026-03-20 winner, 10L+BigramHash+SWA+WD",
+    "best_artifact_bytes": 15768677,
+    "best_artifact_valid": true,
+    "best_script": "specs/batch28/run_winner_rocm.py",
+    "notes": "Val19 (wd4000, 1.1324) and Val21 (wd5000, 1.1342) also use 2700s but port the 2026-03-22 SOTA which is a different and newer script (specs/batch33/run_new_winner.py). Val19 is likely the true record-lane best at 1.1324."
+  },
+  "non_record_lane": {
+    "constraint": "MAX_WALLCLOCK > 3000s — research only, NOT leaderboard-valid",
+    "best_bpb_sliding": 1.1164,
+    "best_run": "val24 (job 16966614) — 6000s, ~18000 steps",
+    "notes": "Each +1500s gives ~-0.005 bpb. Val25 (7500s) and val26 (9000s) pending."
+  },
+  "invalid_runs": {
+    "val13_val_only": "0.9815 bpb — TRAIN_ON_VAL=1 violates rules, not valid",
+    "val17_ttt": "TTT broken (1.3185), standard eval fine (1.1440)"
+  },
+  "exploration_batch_counter": 38,
+  "validation_batch_counter": 26,
+  "upstream_sota": "1.1233 bpb (3-seed mean), 1.1228 best seed, on 8xH100 600s"
+}
