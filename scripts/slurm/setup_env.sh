@@ -28,9 +28,9 @@ echo "  PROJAPPL_BASE=${PROJAPPL_BASE}"
 # Create directory structure
 # =============================================================================
 
-mkdir -p "${SCRATCH_BASE}"/{datasets,tokenizers,logs}
-mkdir -p "${PROJAPPL_BASE}"/{python_user,pip_cache}
-mkdir -p "${CODE_DIR}/logs"
+mkdir -p "${SCRATCH_BASE}"/{datasets,tokenizers,logs} 2>/dev/null || true
+mkdir -p "${PROJAPPL_BASE}"/{python_user,pip_cache} 2>/dev/null || true
+mkdir -p "${CODE_DIR}/logs" 2>/dev/null || true
 
 # =============================================================================
 # Python paths (on projappl - persistent across jobs)
