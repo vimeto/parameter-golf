@@ -9,6 +9,7 @@ data/docs_selected.jsonl
 .mypy_cache/
 .venv
 logs/
+.env
 
 # Private research strategy and experiment tracking
 RESEARCH_ANALYSIS.md
