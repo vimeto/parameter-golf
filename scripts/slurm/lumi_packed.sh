@@ -45,7 +45,9 @@ fi
 # =============================================================================
 
 module load LUMI/25.03
+set +e  # setup_env may have non-fatal mkdir errors
 source "${CODE_DIR}/scripts/slurm/setup_env.sh"
+set -e
 
 PYTHON_PATH="/opt/miniconda3/envs/pytorch/bin/python"
 
