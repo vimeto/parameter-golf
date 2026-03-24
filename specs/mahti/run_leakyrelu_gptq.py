@@ -931,109 +931,98 @@ def quantize_int6_per_row(t: Tensor, clip_range: int = 31) -> tuple[Tensor, Tens
     q = torch.clamp(torch.round(t32 / scale.float()), -clip_range, clip_range).to(torch.int8)
     return q, scale
 
-def gptq_quantize_layer(W: Tensor, H: Tensor, clip_range: int = 31,
-                         block_size: int = 128, percdamp: float = 0.01) -> tuple[Tensor, Tensor]:
-    """Full GPTQ quantization with Hessian-based error compensation."""
-    W = W.float().clone()
-    rows, cols = W.shape
-    H = H.float()
-    diag = torch.diag(H)
-    damp = percdamp * diag.mean()
-    H_reg = H + damp * torch.eye(cols, device=H.device, dtype=torch.float32)
-    try:
-        L = torch.linalg.cholesky(H_reg)
-        Hinv = torch.cholesky_inverse(L)
-    except Exception:
-        Hinv = torch.inverse(H_reg)
-    best_s = None
-    best_scale_err = float('inf')
+def gptq_quantize_layer(weight: Tensor, hessian: Tensor = None, clip_range: int = 31,
+                         block_size: int = 128) -> tuple[Tensor, Tensor]:
+    """Full GPTQ quantization with Hessian-based error compensation (PR #593 proven implementation)."""
+    t32 = weight.float()
+    if t32.ndim != 2 or hessian is None:
+        return quantize_int6_per_row(t32, clip_range)
+    rows, cols = t32.shape
+    H = hessian.float().clone()
+    dead = torch.diag(H) == 0
+    H[dead, dead] = 1
+    damp = 0.01 * torch.mean(torch.diag(H))
+    H[torch.arange(cols), torch.arange(cols)] += damp
+    # Column permutation by Hessian diagonal (descending)
+    perm = torch.argsort(torch.diag(H), descending=True)
+    inv_perm = torch.argsort(perm)
+    W = t32[:, perm].clone()
+    W[:, dead[perm]] = 0
+    H = H[perm][:, perm]
+    # Double Cholesky for upper triangular Hinv
+    Hinv = torch.linalg.cholesky(H)
+    Hinv = torch.cholesky_inverse(Hinv)
+    Hinv = torch.linalg.cholesky(Hinv, upper=True)
+    # Try all 5 percentiles with full GPTQ compensation each time
+    best_q = None; best_scale = None; best_err = float('inf')
     for pct in [0.9990, 0.9995, 0.9999, 0.99999, 1.0]:
         if pct < 1.0:
-            row_clip = torch.quantile(W.abs(), pct, dim=1)
+            row_clip = torch.quantile(t32.abs(), pct, dim=1)
         else:
-            row_clip = W.abs().amax(dim=1)
-        s_cand = (row_clip / clip_range).clamp_min(1.0 / clip_range).to(torch.float16)
-        q_cand = torch.clamp(torch.round(W / s_cand.float()[:, None]), -clip_range, clip_range)
-        recon = q_cand * s_cand.float()[:, None]
-        err = (W - recon).pow(2).mean().item()
-        if err < best_scale_err:
-            best_s = s_cand
-            best_scale_err = err
-    scale = best_s
-    Q = torch.zeros(rows, cols, dtype=torch.float32, device=W.device)
-    for col_start in range(0, cols, block_size):
-        col_end = min(col_start + block_size, cols)
-        block_cols = col_end - col_start
-        W_block = W[:, col_start:col_end].clone()
-        Hinv_block = Hinv[col_start:col_end, col_start:col_end]
-        for j in range(block_cols):
-            col = col_start + j
-            w = W_block[:, j]
-            s_f = scale.float()
-            q = torch.clamp(torch.round(w / s_f), -clip_range, clip_range)
-            Q[:, col] = q
-            err = w - q * s_f
-            if j + 1 < block_cols:
-                hinv_jj = Hinv_block[j, j].clamp_min(1e-10)
-                compensation = err.unsqueeze(1) * Hinv_block[j, j + 1:].unsqueeze(0) / hinv_jj
-                W_block[:, j + 1:] += compensation
-        if col_end < cols:
-            block_err = W[:, col_start:col_end] - Q[:, col_start:col_end] * scale.float().unsqueeze(1)
-            hinv_diag = torch.diag(Hinv_block).clamp_min(1e-10)
-            hinv_cross = Hinv[col_start:col_end, col_end:]
-            compensation = (block_err / hinv_diag.unsqueeze(0)) @ hinv_cross
-            W[:, col_end:] += compensation
-    return Q.to(torch.int8), scale
+            row_clip = t32.abs().amax(dim=1)
+        s = (row_clip / clip_range).clamp_min(1.0 / clip_range).to(torch.float16)
+        sf = s.float()
+        Q = torch.zeros_like(W, dtype=torch.int8)
+        W_work = W.clone()
+        for i1 in range(0, cols, block_size):
+            i2 = min(i1 + block_size, cols)
+            count = i2 - i1
+            W1 = W_work[:, i1:i2].clone()
+            Q1 = torch.zeros(rows, count, dtype=torch.int8)
+            Err1 = torch.zeros(rows, count)
+            Hinv1 = Hinv[i1:i2, i1:i2]
+            for i in range(count):
+                w = W1[:, i]
+                d = Hinv1[i, i]
+                q = torch.clamp(torch.round(w / sf), -clip_range, clip_range).to(torch.int8)
+                Q1[:, i] = q
+                err = (w - q.float() * sf) / d
+                W1[:, i:] -= err.unsqueeze(1) * Hinv1[i, i:].unsqueeze(0)
+                Err1[:, i] = err
+            Q[:, i1:i2] = Q1
+            if i2 < cols:
+                W_work[:, i2:] -= Err1 @ Hinv[i1:i2, i2:]
+        recon = Q.float() * sf[:, None]
+        mse = (W - recon).pow(2).mean().item()
+        if mse < best_err:
+            best_q, best_scale, best_err = Q, s, mse
+    best_q = best_q[:, inv_perm]
+    return best_q, best_scale
 
 
-def collect_hessians(model: nn.Module, val_tokens: Tensor, device: torch.device,
-                     seq_len: int, num_batches: int = 256, batch_size: int = 4,
-                     log_fn=None) -> dict[str, Tensor]:
-    """Collect H = X^T X for each linear layer using calibration data."""
-    hessians: dict[str, Tensor] = {}
-    sample_counts: dict[str, int] = {}
+def collect_hessians(model: nn.Module, train_loader, args, device, grad_accum_steps,
+                     num_batches: int = 256, log_fn=None) -> dict[str, Tensor]:
+    """Collect H = X^T X for each linear layer using calibration data (PR #593 implementation)."""
+    hessians = {}
     hooks = []
-    def make_hook(name: str):
-        def hook(module, input, output):
-            x = input[0].detach().float()
-            x = x.reshape(-1, x.size(-1))
-            n_samples = x.size(0)
-            h = x.float().T @ x.float()
-            if name not in hessians:
-                hessians[name] = torch.zeros_like(h)
-                sample_counts[name] = 0
-            hessians[name] += h
-            sample_counts[name] += n_samples
-        return hook
     for name, module in model.named_modules():
-        if isinstance(module, (nn.Linear, CastedLinear)):
-            hooks.append(module.register_forward_hook(make_hook(name)))
-    total_tokens = val_tokens.numel() - 1
-    tokens_per_batch = batch_size * seq_len
+        if isinstance(module, CastedLinear):
+            param_name = name + ".weight"
+            cols = module.weight.shape[1]
+            hessians[param_name] = torch.zeros(cols, cols, dtype=torch.float32, device='cpu')
+            def make_hook(pname):
+                def hook_fn(module, input, output):
+                    x = input[0].detach().float()
+                    if x.ndim == 3:
+                        x = x.reshape(-1, x.shape[-1])
+                    hessians[pname] += (x.T @ x).cpu()
+                return hook_fn
+            h = module.register_forward_hook(make_hook(param_name))
+            hooks.append(h)
     model.eval()
-    with torch.no_grad():
-        for i in range(num_batches):
-            start = (i * tokens_per_batch) % total_tokens
-            end = start + tokens_per_batch + 1
-            if end > val_tokens.numel():
-                start = 0
-                end = tokens_per_batch + 1
-            chunk = val_tokens[start:end].to(dtype=torch.int64, device=device)
-            x = chunk[:-1].reshape(batch_size, seq_len)
-            y = chunk[1:].reshape(batch_size, seq_len)
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                model(x, y)
+    with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        for _ in range(num_batches):
+            x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
+            model(x, y)
     for h in hooks:
         h.remove()
-    result = {}
     for name in hessians:
-        n = sample_counts[name]
-        if n > 0:
-            hessians[name] /= n
-        result[name] = hessians[name].cpu()
+        H = hessians[name]
+        H /= num_batches
+    model.train()
     if log_fn is not None:
-        log_fn(f"gptq:collected hessians for {len(result)} layers, {num_batches} calibration batches")
-    return result
+        log_fn(f"gptq:collected hessians for {len(hessians)} layers, {num_batches} calibration batches")
+    return hessians
 
 
 def _state_dict_key_to_module_name(key: str) -> str:
@@ -1486,9 +1475,8 @@ def main() -> None:
         torch.cuda.synchronize()
         t_hess = time.perf_counter()
         hessians = collect_hessians(
-            base_model, val_tokens, device,
-            seq_len=args.train_seq_len,
-            num_batches=256, batch_size=4,
+            base_model, train_loader, args, device, grad_accum_steps,
+            num_batches=256,
             log_fn=log0,
         )
         torch.cuda.synchronize()
