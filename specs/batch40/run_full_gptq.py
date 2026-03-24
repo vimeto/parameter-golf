@@ -946,10 +946,12 @@ def gptq_quantize_layer(W: Tensor, H: Tensor, clip_range: int = 31,
     W = W.float().clone()
     rows, cols = W.shape
 
+    # Ensure float32 for Hessian operations
+    H = H.float()
     # Dampening for numerical stability
     diag = torch.diag(H)
     damp = percdamp * diag.mean()
-    H_reg = H + damp * torch.eye(cols, device=H.device, dtype=H.dtype)
+    H_reg = H + damp * torch.eye(cols, device=H.device, dtype=torch.float32)
 
     # Cholesky decomposition for efficient inverse
     try:
@@ -1039,7 +1041,7 @@ def collect_hessians(model: nn.Module, val_tokens: Tensor, device: torch.device,
             x = input[0].detach().float()
             x = x.reshape(-1, x.size(-1))  # flatten batch dims: (N, in_features)
             n_samples = x.size(0)
-            h = x.T @ x  # (in_features, in_features)
+            h = x.float().T @ x.float()  # (in_features, in_features) in float32
             if name not in hessians:
                 hessians[name] = torch.zeros_like(h)
                 sample_counts[name] = 0
