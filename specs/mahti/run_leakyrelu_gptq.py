@@ -938,11 +938,11 @@ def gptq_quantize_layer(weight: Tensor, hessian: Tensor = None, clip_range: int 
     if t32.ndim != 2 or hessian is None:
         return quantize_int6_per_row(t32, clip_range)
     rows, cols = t32.shape
-    H = hessian.float().clone()
+    H = hessian.float().clone().to(weight.device)  # GPU for better Cholesky
     dead = torch.diag(H) == 0
     H[dead, dead] = 1
     damp = 0.01 * torch.mean(torch.diag(H))
-    H[torch.arange(cols), torch.arange(cols)] += damp
+    H[torch.arange(cols, device=H.device), torch.arange(cols, device=H.device)] += damp
     # Column permutation by Hessian diagonal (descending)
     perm = torch.argsort(torch.diag(H), descending=True)
     inv_perm = torch.argsort(perm)
@@ -1061,12 +1061,21 @@ def mixed_quantize_int6(state_dict: dict[str, Tensor], int6_cats: set[str],
             module_name = _state_dict_key_to_module_name(name)
             H = hessians.get(module_name) if hessians is not None else None
             if FULL_GPTQ and H is not None and t.ndim == 2 and H.shape[0] == t.shape[1]:
-                q, s = gptq_quantize_layer(t, H)
-                gptq_count += 1
-                meta[name] = {"type": "int6", "method": "gptq"}
+                try:
+                    q, s = gptq_quantize_layer(t, H)
+                    gptq_count += 1
+                    meta[name] = {"type": "int6", "method": "gptq"}
+                except Exception as e:
+                    if log_fn:
+                        log_fn(f"gptq:cholesky_failed layer={name} error={e}")
+                    q, s = quantize_int6_per_row(t)
+                    fallback_count += 1
+                    meta[name] = {"type": "int6", "method": "gptq_fallback"}
             else:
                 q, s = quantize_int6_per_row(t)
                 fallback_count += 1
+                if FULL_GPTQ and log_fn and H is not None:
+                    log_fn(f"gptq:shape_mismatch layer={name} H={H.shape} W={t.shape}")
                 meta[name] = {"type": "int6"}
             result[name + ".q"] = q
             result[name + ".scale"] = s
