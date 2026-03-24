@@ -1058,8 +1058,9 @@ def mixed_quantize_int6(state_dict: dict[str, Tensor], int6_cats: set[str],
             meta[name] = "passthrough_ctrl"
             continue
         if cat in int6_cats and t.ndim >= 1:
-            module_name = _state_dict_key_to_module_name(name)
-            H = hessians.get(module_name) if hessians is not None else None
+            # Hessian keys are "module.weight" from collect_hessians
+            # State dict keys are also "module.weight" — direct lookup
+            H = hessians.get(name) if hessians is not None else None
             if FULL_GPTQ and H is not None and t.ndim == 2 and H.shape[0] == t.shape[1]:
                 try:
                     q, s = gptq_quantize_layer(t, H)
