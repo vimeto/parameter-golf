@@ -57,7 +57,7 @@ export PYTORCH_HIP_ALLOC_CONF=expandable_segments:True
 if [ -n "${SLURM_JOB_ID:-}" ]; then
     export MIOPEN_USER_DB_PATH="/tmp/$(whoami)-miopen-cache-${SLURM_NODEID:-0}"
     export MIOPEN_CUSTOM_CACHE_DIR="${MIOPEN_USER_DB_PATH}"
-    mkdir -p "${MIOPEN_USER_DB_PATH}"
+    mkdir -p "${MIOPEN_USER_DB_PATH}" 2>/dev/null || true
 fi
 
 # =============================================================================
@@ -68,7 +68,7 @@ export HF_HOME="${SCRATCH_BASE}/hf_cache"
 export HF_HUB_CACHE="${HF_HOME}/hub"
 export HF_HUB_DISABLE_XET=1
 export HF_HUB_ENABLE_HF_TRANSFER=1
-mkdir -p "${HF_HUB_CACHE}"
+mkdir -p "${HF_HUB_CACHE}" 2>/dev/null || true
 
 # =============================================================================
 # Container and bind paths

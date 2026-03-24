@@ -30,6 +30,13 @@
 
 set -euo pipefail
 
+# Workaround: compute nodes may not have project group in secondary groups.
+# sg switches primary group so we can access /scratch/project_462001163/.
+if [ "${PGOLF_SG_DONE:-}" != "1" ]; then
+    export PGOLF_SG_DONE=1
+    exec sg project_462001163 -c "bash $0 $*"
+fi
+
 SPEC_FILE="${1:?spec file is required}"
 export CODE_DIR="${HOME}/parameter-golf"
 cd "${CODE_DIR}"

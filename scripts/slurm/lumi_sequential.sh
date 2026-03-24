@@ -30,6 +30,13 @@
 
 set -euo pipefail
 
+# Workaround: compute nodes may not have project group in secondary groups.
+# sg switches primary group so we can access /scratch/project_462001163/.
+if [ "${PGOLF_SG_DONE:-}" != "1" ]; then
+    export PGOLF_SG_DONE=1
+    exec sg project_462001163 -c "bash $0 $*"
+fi
+
 SPEC_FILE="${1:?spec file is required}"
 export CODE_DIR="${HOME}/parameter-golf"
 cd "${CODE_DIR}"
@@ -45,7 +52,9 @@ fi
 # =============================================================================
 
 module load LUMI/25.03
+set +e  # setup_env may have non-fatal mkdir errors
 source "${CODE_DIR}/scripts/slurm/setup_env.sh"
+set -e
 
 PYTHON_PATH="/opt/miniconda3/envs/pytorch/bin/python"
 TRAIN_SCRIPT="${TRAIN_SCRIPT:-records/our_submission/train_gpt.py}"
