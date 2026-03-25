@@ -1,17 +1,44 @@
 {
   "record_lane": {
-    "best_standard_bpb": 1.1526,
-    "best_standard_run": "val27 (LeakyReLU² + XSA-all, wd4000)",
-    "best_sliding_bpb": 1.1324,
-    "best_sliding_run": "val19 (original SOTA port, wd4000)",
-    "note": "Val27 improved standard by -0.004 but sliding eval didn't run (time limit). Val28 submitted with sliding enabled."
+    "approach_1": {
+      "name": "LeakyReLU² + Full GPTQ + BigramHash1024",
+      "standard_bpb": 1.1488,
+      "sliding_bpb": 1.1251,
+      "artifact_bytes": 15689071,
+      "valid": true,
+      "script": "specs/mahti/run_leakyrelu_gptq_trim.py",
+      "job": "16984822"
+    },
+    "approach_2": {
+      "name": "Full GPTQ only (baseline architecture)",
+      "standard_bpb": 1.1526,
+      "sliding_bpb": 1.1287,
+      "artifact_bytes": 15581141,
+      "valid": true,
+      "script": "specs/mahti/run_gptq_only.py",
+      "job": "16984818"
+    },
+    "approach_3": {
+      "name": "VRL + Full GPTQ",
+      "standard_bpb": 1.1526,
+      "sliding_bpb": 1.1287,
+      "artifact_bytes": 15652186,
+      "valid": true,
+      "script": "specs/mahti/run_gptq_vrl.py",
+      "job": "16984884",
+      "note": "VRL adds negligible improvement over GPTQ-only"
+    }
   },
-  "active_jobs": {
-    "16971825": "Batch 40 — Full GPTQ exploration (training, step ~6500)",
-    "16973201": "Val 28 — LeakyReLU² + XSA-all with sliding eval"
+  "upstream_sota": {
+    "merged": "1.1233 sliding on H100",
+    "gap_to_approach_1": "+0.002 (we're 0.002 behind H100 SOTA)",
+    "note": "The gap is likely from MI250 vs H100 (no FA3, slightly fewer effective steps)"
   },
-  "exploration_batch_counter": 40,
-  "validation_batch_counter": 28,
-  "key_confirmed": "LeakyReLU(0.5)² gives -0.004 bpb at both exploration and validation scale. Graduating to proven.",
-  "next": "Get batch 40 Full GPTQ results. If GPTQ works: validate LeakyReLU² + Full GPTQ combo."
+  "exploration_batch_counter": 45,
+  "validation_batch_counter": 35,
+  "next_steps": [
+    "Run approach 1 on 8xH100 RunPod — expected to match or beat 1.1233",
+    "Fix TTT on this architecture — could add -0.015 bpb",
+    "Try longer warmdown or higher LR for MI250-specific tuning"
+  ]
 }
