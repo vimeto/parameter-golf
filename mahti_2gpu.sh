@@ -25,14 +25,17 @@ echo "RUN_ID: ${RUN_ID:-default}"
 echo "GPUs: ${NUM_GPUS}"
 echo "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
 
-# Workaround: GCC fails with "cannot read spec file './specs'" when our specs/
-# directory is in CWD (GCC interprets 'specs' dir as a spec file).
-# Run from /tmp, pass absolute paths for data and script.
-PGOLF_DIR="$(pwd)"
-export DATA_PATH="${DATA_PATH:-${PGOLF_DIR}/data/datasets/fineweb10B_sp1024}"
-export TOKENIZER_PATH="${TOKENIZER_PATH:-${PGOLF_DIR}/data/tokenizers/fineweb_1024_bpe.model}"
-WORK_DIR="/tmp/${USER}/pgolf_run_${SLURM_JOB_ID}"
-mkdir -p "${WORK_DIR}/logs"
-cd "${WORK_DIR}"
+# Workaround 1: GCC fails with "cannot read spec file './specs'" when our specs/
+# directory is in CWD. Temporarily rename it.
+mv specs _specs_tmp 2>/dev/null || true
 
-torchrun --standalone --nproc_per_node="${NUM_GPUS}" "${PGOLF_DIR}/${TRAIN_SCRIPT}"
+# Workaround 2: /tmp on compute nodes can be full. Use scratch for inductor cache.
+export TORCHINDUCTOR_CACHE_DIR="/scratch/project_2013932/${USER}/inductor_cache_${SLURM_JOB_ID}"
+mkdir -p "${TORCHINDUCTOR_CACHE_DIR}"
+
+torchrun --standalone --nproc_per_node="${NUM_GPUS}" "${TRAIN_SCRIPT}"
+EXIT_CODE=$?
+
+# Restore specs dir
+mv _specs_tmp specs 2>/dev/null || true
+exit ${EXIT_CODE}
