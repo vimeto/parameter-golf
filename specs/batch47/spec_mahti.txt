@@ -1,0 +1,27 @@
+# Batch 47: TTT Debug Sweep (Mahti A100, individual 1-GPU jobs)
+# Base: specs/mahti/run_leakyrelu_gptq_trim.py (current best: 1.1251 sliding)
+# Submit each as: scripts/mahti.sh submit TRAIN_SCRIPT=specs/batch47/runN.py RUN_ID=... MAX_WALLCLOCK_SECONDS=300 TIME=02:00:00
+#
+# Run 0: Control (no TTT)
+#   scripts/mahti.sh submit TRAIN_SCRIPT=specs/batch47/run0_control.py RUN_ID=b47_control MAX_WALLCLOCK_SECONDS=300 EVAL_STRIDE=0 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 TIME=01:00:00
+#
+# Run 1: TTT SGD lr=0.002, 3ep, freeze=0, Full GPTQ
+#   scripts/mahti.sh submit TRAIN_SCRIPT=specs/batch47/run1_ttt_sgd_gptq.py RUN_ID=b47_ttt_sgd MAX_WALLCLOCK_SECONDS=300 EVAL_STRIDE=0 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 TIME=02:00:00
+#
+# Run 2: TTT SGD lr=0.001, 3ep, freeze=0, Full GPTQ
+#   scripts/mahti.sh submit TRAIN_SCRIPT=specs/batch47/run2_ttt_sgd_lowlr.py RUN_ID=b47_ttt_lowlr MAX_WALLCLOCK_SECONDS=300 EVAL_STRIDE=0 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 TIME=02:00:00
+#
+# Run 3: TTT SGD lr=0.002, 3ep, freeze=2, Full GPTQ
+#   scripts/mahti.sh submit TRAIN_SCRIPT=specs/batch47/run3_ttt_sgd_freeze2.py RUN_ID=b47_ttt_freeze2 MAX_WALLCLOCK_SECONDS=300 EVAL_STRIDE=0 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 TIME=02:00:00
+#
+# Run 4: TTT AdamW lr=0.0001, 3ep, Full GPTQ
+#   scripts/mahti.sh submit TRAIN_SCRIPT=specs/batch47/run4_ttt_adamw_gptq.py RUN_ID=b47_ttt_adamw MAX_WALLCLOCK_SECONDS=300 EVAL_STRIDE=0 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 TIME=02:00:00
+#
+# Run 5: TTT SGD lr=0.002, 3ep, GPTQ-lite (no Full GPTQ)
+#   scripts/mahti.sh submit TRAIN_SCRIPT=specs/batch47/run5_ttt_sgd_lite.py RUN_ID=b47_ttt_lite MAX_WALLCLOCK_SECONDS=300 EVAL_STRIDE=0 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 TIME=02:00:00
+#
+# Run 6: TTT SGD lr=0.002, 5ep, GPTQ-lite
+#   scripts/mahti.sh submit TRAIN_SCRIPT=specs/batch47/run6_ttt_sgd_5ep_lite.py RUN_ID=b47_ttt_5ep MAX_WALLCLOCK_SECONDS=300 EVAL_STRIDE=0 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 TIME=02:00:00
+#
+# Run 7: TTT LoRA SGD, GPTQ-lite
+#   scripts/mahti.sh submit TRAIN_SCRIPT=specs/batch47/run7_ttt_lora_lite.py RUN_ID=b47_ttt_lora MAX_WALLCLOCK_SECONDS=300 EVAL_STRIDE=0 VAL_LOSS_EVERY=0 TRAIN_LOG_EVERY=100 TIME=02:00:00

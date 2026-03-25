@@ -82,14 +82,36 @@ When an experiment wins validation and is confirmed better than global best:
 - `git add`, `git commit`, `scripts/lumi.sh sync`
 - `scripts/lumi.sh submit scripts/slurm/lumi_packed.sh specs/batchN/spec.txt`
 
-## LUMI Supercomputer
+## Compute Resources
 
+### LUMI (MI250X) — Full-Node Allocation
 - GPUs: AMD MI250X (8 GCDs per node, 64GB HBM2e each)
 - Partition: `standard-g` (up to 2 days), `dev-g` for quick tests (3h max)
 - Account: `project_462001163`
-- Code dir on LUMI: `~/parameter-golf`
-- Data on scratch: `/scratch/project_462001163/vtoivone/pgolf_cache/`
+- Code dir: `~/parameter-golf`
+- Data: `/scratch/project_462001163/vtoivone/pgolf_cache/`
 - Container: `lumi-pytorch-rocm-6.2.4-python-3.12-pytorch-v2.7.1.sif`
+- **Allocation model:** Reserving ANY GPU reserves the full 8-GPU node. Always use packed 8x1-GPU runs for exploration.
+- **Exploration:** `lumi_packed.sh` — 8 parallel 1-GPU experiments per node (50 min each)
+- **Validation:** `lumi_train.sh` — single 8-GPU run per node (2700s wallclock)
+- Submit via: `scripts/lumi.sh submit <script> [args]`
+
+### Mahti (A100) — Individual GPU Jobs
+- GPUs: NVIDIA A100 (4 per node, 40GB each)
+- Partition: `gpusmall` (1-2 GPUs, less congested) or `gpumedium` (3-4 GPUs, very congested)
+- Account: `project_2013932`
+- Code dir: `/scratch/project_2013932/vtoivone/pgolf`
+- Data: `./data/datasets/fineweb10B_sp1024` (default relative paths work)
+- SLURM script (on Mahti): `mahti_1gpu.sh` — uses `module load pytorch/2.9`, no container
+- **Allocation model:** Full nodes are very congested. Submit individual 1-GPU jobs via `gpusmall` partition — they queue independently and start faster. Good for TTT sweeps where many configs run in parallel across separate queue slots.
+- **Submission pattern:** `ssh mahti "cd /scratch/project_2013932/vtoivone/pgolf && sbatch --export=ALL,TRAIN_SCRIPT=specs/...,RUN_ID=...,MAX_WALLCLOCK_SECONDS=... --time=HH:MM:SS mahti_1gpu.sh"`
+- **Sync:** `ssh mahti "cd /scratch/project_2013932/vtoivone/pgolf && git pull"`
+- **Validation:** Not ideal (max 4 GPUs, congested). Prefer LUMI for 8-GPU validation.
+
+### Cluster Strategy
+- **LUMI** = packed exploration batches (8 runs/node) + 8-GPU validation
+- **Mahti** = individual exploration runs (1 GPU each, queue independently) — best for sweeps with many configs
+- **Both clusters run simultaneously** for maximum throughput
 
 ## LUMI Training Guidelines
 
