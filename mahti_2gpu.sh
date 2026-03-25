@@ -14,10 +14,10 @@
 source /appl/profile/zz-csc-env.sh
 module load pytorch/2.9
 
-cd /scratch/project_2013932/vtoivone/pgolf
+PGOLF_DIR="/scratch/project_2013932/vtoivone/pgolf"
+cd "${PGOLF_DIR}"
 mkdir -p logs
 
-# TRAIN_SCRIPT must be set via --export
 TRAIN_SCRIPT="${TRAIN_SCRIPT:-train_gpt.py}"
 NUM_GPUS="${NUM_GPUS:-2}"
 echo "Script: ${TRAIN_SCRIPT}"
@@ -25,17 +25,18 @@ echo "RUN_ID: ${RUN_ID:-default}"
 echo "GPUs: ${NUM_GPUS}"
 echo "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
 
-# Workaround 1: GCC fails with "cannot read spec file './specs'" when our specs/
-# directory is in CWD. Temporarily rename it.
-mv specs _specs_tmp 2>/dev/null || true
+# Set data paths as absolute (needed because we cd away from pgolf dir)
+export DATA_PATH="${DATA_PATH:-${PGOLF_DIR}/data/datasets/fineweb10B_sp1024}"
+export TOKENIZER_PATH="${TOKENIZER_PATH:-${PGOLF_DIR}/data/tokenizers/fineweb_1024_bpe.model}"
 
-# Workaround 2: /tmp on compute nodes can be full. Use scratch for inductor cache.
+# Use scratch for inductor cache (node /tmp can fill up)
 export TORCHINDUCTOR_CACHE_DIR="/scratch/project_2013932/${USER}/inductor_cache_${SLURM_JOB_ID}"
 mkdir -p "${TORCHINDUCTOR_CACHE_DIR}"
 
-torchrun --standalone --nproc_per_node="${NUM_GPUS}" "${TRAIN_SCRIPT}"
-EXIT_CODE=$?
+# Workaround: GCC fails with "cannot read spec file './specs'" when our specs/
+# directory is in CWD. Run from a clean temp dir.
+WORK_DIR="/scratch/project_2013932/${USER}/pgolf_run_${SLURM_JOB_ID}"
+mkdir -p "${WORK_DIR}/logs"
+cd "${WORK_DIR}"
 
-# Restore specs dir
-mv _specs_tmp specs 2>/dev/null || true
-exit ${EXIT_CODE}
+torchrun --standalone --nproc_per_node="${NUM_GPUS}" "${PGOLF_DIR}/${TRAIN_SCRIPT}"
