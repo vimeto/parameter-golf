@@ -1,5 +1,16 @@
 # Validation Log
 
+## Validation 25 (job 16989818) — Parameter Banking Smoke Test
+Script: specs/batch48/run_banking.py
+Config: 8xMI250X, 1500s wallclock (reduced), warmdown=2000, parameter banking (Phase A)
+Result: standard=**1.3051** | sliding=**1.2803** | artifact=**16.35MB** (OVER by 0.35MB)
+Training: 20000 steps at **67.5ms/step**, total 1351s
+vs global best: Not comparable (reduced wallclock). Banking correctness confirmed — model trains and evals.
+Status: VALID training, INVALID artifact (needs trimming). Banking port works on MI250X.
+Note: Step time 67.5ms is 2.8x faster than non-banked (~187ms). May be due to batched Newton-Schulz or different effective config. Needs investigation.
+
+---
+
 ## Validation Batch 1 (job 16915230) — Sequential 8-GPU Runs
 Platform: 8x MI250X, 524K batch, token-parity with 8xH100
 

@@ -47,10 +47,20 @@ Winner-family scripts have slow sliding eval (969K windows on 1 GPU). Use a fast
 - Use relative rankings between runs, not absolute bpb numbers
 - Separate three metrics in logs: `standard_postquant_bpb`, `sliding_bpb`, `ttt_bpb`
 
+### TTT (Test-Time Training) — Proven Findings
+- **Only LoRA TTT works.** Full fine-tuning TTT (SGD or AdamW, any LR, any freeze config) causes catastrophic forgetting and diverges on both Full GPTQ and GPTQ-lite models.
+- LoRA TTT (rank-8 on Q/V, frozen base weights) keeps avg_loss stable near baseline (~2.76 vs 2.73 roundtrip).
+- Score-first protocol: score chunk in `inference_mode()`, then train. Chunk N scored by model adapted on chunks 0..N-1.
+- **Full GPTQ >> GPTQ-lite** for quantization: ~0.12 BPB gap (1.61 vs 1.73 on 1-GPU). Always use Full GPTQ.
+- **Next step:** LoRA TTT on Full GPTQ model (combining best quant + best TTT).
+
+### Exploration GPTQ Note
+- Full Hessian GPTQ is too slow for 1-GPU packed exploration (256-batch Hessian collection takes ~32 min, quantization another ~30 min). For packed exploration: use GPTQ-lite or reduce calibration batches to 64.
+
 ### Validation Priority
 1. Don't wait for noisy 1-GPU results to block validation — submit promising configs immediately
 2. Don't promote old-base runs before winner-family runs
-3. Legal eval-time adaptation (TTT) is the highest-upside path to beat the leaderboard
+3. LoRA TTT is the viable eval-time adaptation path — full fine-tuning TTT diverges
 4. Val-only training during training phase is AGAINST THE RULES — only TTT during eval
 
 ### Graduating Features
