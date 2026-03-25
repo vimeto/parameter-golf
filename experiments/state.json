@@ -1,7 +1,16 @@
 {
   "record_lane": {
     "approach_1": {
-      "name": "LeakyReLU² + Full GPTQ + BigramHash1024",
+      "name": "LeakyReLU² + Full GPTQ + BH1024 + XSA-all + QAT@0.5 + wd5000",
+      "standard_bpb": 1.1468,
+      "sliding_bpb": 1.1230,
+      "artifact_bytes": 15248350,
+      "valid": true,
+      "script": "specs/mahti/run_best_combined.py",
+      "job": "16993966 (LUMI 8xMI250X)"
+    },
+    "approach_2": {
+      "name": "LeakyReLU² + Full GPTQ + BH1024 (prev best)",
       "standard_bpb": 1.1488,
       "sliding_bpb": 1.1251,
       "artifact_bytes": 15689071,
@@ -12,36 +21,19 @@
   },
   "upstream_sota": {
     "merged": "1.1194 sliding on H100 (PR #549, LeakyReLU² + Legal TTT + Parallel Muon)",
-    "gap_to_approach_1": "+0.006 (we're 0.006 behind, mostly MI250 vs H100 hardware gap)",
-    "note": "Gap expected to close on H100 RunPod. Upstream uses score-first SGD TTT for -0.0025 BPB."
+    "gap_to_approach_1": "+0.0036 (expected to close on H100 — MI250 ~4% slower)",
+    "note": "XSA-all + QAT@0.5 + wd5000 validated as -0.002 improvement. Gap is hardware."
   },
-  "exploration_batch_counter": 48,
-  "validation_batch_counter": 35,
-  "ttt_findings": {
-    "full_finetuning_sgd": "DIVERGES — catastrophic forgetting on both Full GPTQ and GPTQ-lite",
-    "full_finetuning_adamw": "DIVERGES — loss climbs to 3.66+ on Full GPTQ",
-    "lora_rank8_qv": "WORKS — avg_loss stable at 2.76, near baseline 2.73. Only viable TTT path.",
-    "gptq_lite_vs_full": "Full GPTQ is 0.12 BPB better (1.61 vs 1.73 on 1-GPU). Always use Full GPTQ.",
-    "next": "LoRA TTT on Full GPTQ model (untested combination)"
-  },
-  "banking_smoke_test": {
-    "job": "16989818 (LUMI 8xMI250X)",
-    "standard_bpb": 1.305,
-    "sliding_bpb": 1.280,
-    "artifact_bytes": 16347622,
-    "step_time_ms": 67.54,
-    "status": "COMPLETED — artifact 0.35MB over 16MB, needs trimming. BPB reasonable for 1500s run.",
-    "note": "Parameter banking works on MI250X. 67.5ms/step is fast (vs ~187ms non-banked). Needs artifact fix."
-  },
-  "batch46_exploration": {
-    "status": "TIMED OUT — Full GPTQ too slow for 1-GPU packed (Hessian 32min + quant >30min exceeds 90min SLURM)",
-    "fix": "Use GPTQ-lite or reduce calib batches for exploration"
+  "exploration_batch_counter": 49,
+  "validation_batch_counter": 36,
+  "running_jobs": {
+    "mahti_6167289": "Phase A banking control (2-GPU A100, may crash)",
+    "mahti_6167290": "Phase B Parallel Muon (2-GPU A100, may crash)"
   },
   "next_steps": [
-    "1. LoRA TTT on Full GPTQ — highest priority, combines best quant + best TTT",
-    "2. Fix batch 46 exploration (use GPTQ-lite) and resubmit",
-    "3. Fix banking artifact size (trim BigramHash or adjust int6 params)",
-    "4. Port Parallel Muon Phase B (overlapped comm) once banking is validated",
-    "5. Run best config on 8xH100 RunPod for official submission"
+    "1. Monitor Mahti Phase A/B jobs for throughput comparison",
+    "2. If Parallel Muon gives >2x throughput, combine with best config for even more training steps",
+    "3. Deploy best config on 8xH100 RunPod for competition-grade numbers",
+    "4. Submit PR upstream if we beat 1.1194 on H100"
   ]
 }

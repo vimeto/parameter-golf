@@ -1,5 +1,88 @@
 # Validation Log
 
+## Validation 33 (job 16997297) — b50 LZMA + BH3072 + bigbatch 8xMI250X
+Script: user-submitted variant of best_combined
+Config: 11L, LeakyReLU², Full GPTQ, BH3072, XSA-all, LZMA compression, batch=786K, 2700s
+Result: standard=**1.1504** | sliding=**1.1266** | artifact=**15.70MB** (fits)
+5433 steps at 497ms/step. Bigger batch → fewer steps → worse BPB despite BH3072.
+vs best_combined: sliding 1.1230 → 1.1266 = +0.0036 worse
+Status: VALID artifact. LZMA saves ~0.5MB vs zstd. But fewer steps hurt BPB.
+Note: LZMA compression is useful. BH3072 adds 0.26M params. Bigger batch not helpful at 8-GPU.
+
+---
+
+## Validation 32 (job 16996591) — Phase A Banking Control 8xMI250X
+Script: specs/batch49/run_banking_control.py
+Config: 11L, LeakyReLU², banked weights, DDP, Full GPTQ, BH1024, XSA-4, 2700s
+Result: standard=**1.1514** | sliding=**1.1276** | artifact=**16.53MB** (OVER)
+7902 steps at 341ms/step. Banking doesn't speed up 524K-batch training on MI250.
+Status: INVALID (artifact over). Banking compresses ~0.5MB worse than non-banked.
+
+---
+
+## Validation 31 (job 16996590) — Phase B Parallel Muon 8xMI250X
+Script: specs/batch49/run_parallel_muon.py
+Config: 11L, LeakyReLU², banked weights, reduce-scatter + all-gather (no DDP), Full GPTQ, BH1024, XSA-4, 2700s
+Result: standard=**1.1509** | sliding=**1.1272** | artifact=**16.54MB** (OVER)
+8128 steps at 332ms/step (~3% faster than Phase A). Parallel Muon works but gain is small on MI250.
+Status: INVALID (artifact over). Phase B slightly faster but banking artifacts too large.
+Note: Parallel Muon will be more impactful on H100 where optimizer is a larger fraction of step time.
+
+---
+
+## Validation 30 (job 16985260) — LeakyReLU² + Full GPTQ + 3600s extended wallclock [NON-RECORD]
+Script: specs/mahti/run_leakyrelu_gptq_trim.py
+Config: 11L, LeakyReLU², Full GPTQ, BH1024, XSA-4, late QAT@0.15, 3600s wallclock
+Result: standard=**1.1421** | sliding=**1.1183** | artifact=**16.07MB** (OVER)
+10699 steps at 336ms/step. More steps = better BPB.
+Lane: NON-RECORD (3600s > 3000s budget). Artifact over 16MB.
+Note: Shows that more training steps continue to improve BPB. With banking speedup, we could reach 10K+ steps in 2700s.
+
+---
+
+## Validation 29 (job 16993966) — Best Combined: XSA-all + QAT@0.5 + wd5000 8xMI250X [NEW RECORD]
+Script: specs/mahti/run_best_combined.py
+Config: 11L, LeakyReLU², Full GPTQ, BH1024, XSA on ALL 11 layers, late QAT@0.5, warmdown=5000
+Result: standard=**1.1468** | sliding=**1.1230** | artifact=**15.25MB**
+vs previous best: sliding 1.1251 → **1.1230 = -0.0021 NEW RECORD**
+vs upstream SOTA: 1.1194 → gap only **+0.0036** (expected to close on H100)
+Artifact: 15.25MB (fits, 0.75MB headroom!)
+Status: **NEW RECORD-LANE BEST.** XSA-all + earlier QAT + longer warmdown all help.
+
+---
+
+## Validation 28 (job 16991125) — LeakyReLU² + Full GPTQ + TTT LoRA 8xMI250X
+Script: specs/mahti/run_leakyrelu_ttt.py
+Config: 11L, LeakyReLU², Full Hessian GPTQ, BigramHash 2048, TTT LoRA rank-8 Q/V/LM-head
+Result: standard=**1.1540** | sliding=**1.1301** | TTT LoRA=**1.1851** | artifact=**15.75MB**
+TTT LoRA is +0.031 WORSE than standard eval, +0.055 WORSE than sliding eval.
+Status: TTT BROKEN — LoRA degrades rather than improves.
+Root cause: TTT eval protocol (doc-isolated, stride-256) is worse than our flat eval for this model.
+Reference ablation shows LoRA itself only contributes -0.003 bpb — the rest is from eval protocol.
+Our sliding window eval (stride=64) already provides -0.024 bpb improvement over standard.
+Conclusion: **TTT is dead for our model. Sliding window eval is the superior approach.**
+
+---
+
+## Validation 27 (job 16990883) — Leaky SwiGLU MLP1.5 + Full GPTQ 8xMI250X
+Script: specs/mahti/run_leaky_swiglu_gptq.py
+Config: 11L, Leaky SwiGLU (leaky_relu(0.5) gate), MLP1.5x (3 matrices), Full Hessian GPTQ, INT6+zstd
+Result: standard=**1.1722** | sliding=**1.1481** | artifact=**14.1MB**
+vs best (LeakyReLU²+GPTQ): 1.1251 → 1.1481 = +0.023 worse
+Status: VALID artifact but significantly worse bpb. SwiGLU not competitive with LeakyReLU² at full scale.
+Note: MLP1.5x has 3 matrices (gate+up+proj) vs 2 (fc+proj), fewer effective params per layer despite similar FLOPs.
+
+---
+
+## Validation 26 (job 16990874) — SwiGLU MLP1.5 + Full GPTQ 8xMI250X
+Script: specs/mahti/run_swiglufn_gptq.py
+Config: 11L, SwiGLU (F.silu gate), MLP1.5x (3 matrices), Full Hessian GPTQ, INT6+zstd
+Result: standard=**1.1731** | sliding=**1.1489** | artifact=**14.0MB**
+vs best (LeakyReLU²+GPTQ): 1.1251 → 1.1489 = +0.024 worse
+Status: VALID artifact but significantly worse bpb. SwiGLU variants not competitive.
+
+---
+
 ## Validation 25 (job 16989818) — Parameter Banking Smoke Test
 Script: specs/batch48/run_banking.py
 Config: 8xMI250X, 1500s wallclock (reduced), warmdown=2000, parameter banking (Phase A)
