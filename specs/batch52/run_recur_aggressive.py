@@ -1830,6 +1830,7 @@ def main() -> None:
     if IS_ROCM:
         _inductor_config = __import__("torch._inductor.config", fromlist=["config"])
         _inductor_config.shape_padding = False
+        _inductor_config.cpp_wrapper = False  # Avoid g++ dependency in container
         compiled_model = torch.compile(base_model, mode="default", fullgraph=False)
     else:
         compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True)
