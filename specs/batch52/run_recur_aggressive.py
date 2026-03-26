@@ -1001,7 +1001,7 @@ class GPT(nn.Module):
         for vi in range(nv):
             pi = self.recur_v2p[vi]  # physical layer index
             pass_idx = self.recur_pass_idx[vi]
-            adapter = self.recur_adapters.get(str(vi)) if pass_idx > 0 else None
+            adapter = self.recur_adapters[str(vi)] if (pass_idx > 0 and str(vi) in self.recur_adapters) else None
             # U-Net: encoder half collects skips, decoder half consumes them
             if vi < self.num_encoder_layers:
                 ve = self._get_ve(pi, input_ids, ve_cache)
