@@ -1830,8 +1830,9 @@ def main() -> None:
     if IS_ROCM:
         _inductor_config = __import__("torch._inductor.config", fromlist=["config"])
         _inductor_config.shape_padding = False
-        _inductor_config.cpp_wrapper = False  # Avoid g++ dependency in container
-        compiled_model = torch.compile(base_model, mode="default", fullgraph=False)
+        # LoRA adapters create complex graph that triggers C++ codegen; skip compile on ROCm
+        compiled_model = base_model  # No torch.compile — LoRA adapters incompatible with ROCm inductor
+        log0("WARNING: torch.compile DISABLED for ROCm + LoRA recurrence (g++ unavailable in container)")
     else:
         compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True)
     # No DDP -- Parallel Muon handles bank comms, non-bank params get manual all-reduce
@@ -2225,7 +2226,7 @@ def main() -> None:
     eval_model.load_state_dict(deq_state, strict=True)
     log0(f"eval_model: {args.num_layers} physical layers, {nv} virtual layers, adapters apply LoRA on-the-fly")
     if IS_ROCM:
-        compiled_eval = torch.compile(eval_model, mode="default", fullgraph=False)
+        compiled_eval = eval_model  # No compile — LoRA adapters incompatible with ROCm inductor
     else:
         compiled_eval = torch.compile(eval_model, dynamic=False, fullgraph=True)
     torch.cuda.synchronize()
