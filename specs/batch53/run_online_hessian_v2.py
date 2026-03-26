@@ -1738,54 +1738,11 @@ def main() -> None:
         if isinstance(module, CastedLinear):
             module.float()
     restore_low_dim_params_to_fp32(base_model)
-    # --- Online Hessian accumulation setup (MUST be before torch.compile) ---
+    # --- Online Hessian setup (NO hooks — use separate uncompiled forward passes) ---
     ONLINE_HESSIAN_EVERY = 25  # accumulate every 25 steps
     online_hessian_count = 0
-    _oh_active = [False]  # mutable flag for hooks (list so closures can mutate)
-    _oh_hook_fired = [False]  # tracks whether hooks actually executed
-    _oh_bufs: dict[str, Tensor] = {}
-    oh_model_dim = args.model_dim
-    oh_mlp_dim = int(args.mlp_mult * oh_model_dim)
-    for i in range(args.num_layers):
-        _oh_bufs[f'blocks.{i}.attn.c_q.weight'] = torch.zeros(oh_model_dim, oh_model_dim, dtype=torch.float32, device='cpu')
-        _oh_bufs[f'blocks.{i}.attn.c_k.weight'] = torch.zeros(oh_model_dim, oh_model_dim, dtype=torch.float32, device='cpu')
-        _oh_bufs[f'blocks.{i}.attn.c_v.weight'] = torch.zeros(oh_model_dim, oh_model_dim, dtype=torch.float32, device='cpu')
-        _oh_bufs[f'blocks.{i}.mlp.fc.weight'] = torch.zeros(oh_model_dim, oh_model_dim, dtype=torch.float32, device='cpu')
-    _oh_hooks = []
-    for i, block in enumerate(base_model.blocks):
-        qk = f'blocks.{i}.attn.c_q.weight'
-        kk = f'blocks.{i}.attn.c_k.weight'
-        vk = f'blocks.{i}.attn.c_v.weight'
-        upk = f'blocks.{i}.mlp.fc.weight'
-        def make_attn_hook(qk, kk, vk):
-            def hook_fn(module, args_tuple, output):
-                if not _oh_active[0]:
-                    return
-                _oh_hook_fired[0] = True
-                with torch.no_grad():
-                    x = args_tuple[0].detach().float()
-                    if x.ndim == 3:
-                        x = x.reshape(-1, x.shape[-1])
-                    H = (x.T @ x).cpu()
-                    _oh_bufs[qk] += H
-                    _oh_bufs[kk] += H
-                    _oh_bufs[vk] += H
-            return hook_fn
-        def make_mlp_hook(upk):
-            def hook_fn(module, args_tuple, output):
-                if not _oh_active[0]:
-                    return
-                with torch.no_grad():
-                    x = args_tuple[0].detach().float()
-                    if x.ndim == 3:
-                        x = x.reshape(-1, x.shape[-1])
-                    _oh_bufs[upk] += (x.T @ x).cpu()
-            return hook_fn
-        h1 = block.attn.register_forward_hook(make_attn_hook(qk, kk, vk))
-        h2 = block.mlp.register_forward_hook(make_mlp_hook(upk))
-        _oh_hooks.extend([h1, h2])
-    log0(f"online_hessian:registered {len(_oh_hooks)} hooks on base_model BEFORE compile")
-    # --- Now compile (hooks are part of the graph from first trace) ---
+    log0(f"online_hessian:mode=separate_forward_pass every={ONLINE_HESSIAN_EVERY} steps (no hooks)")
+    # ---
     if IS_ROCM:
         _inductor_config = __import__("torch._inductor.config", fromlist=["config"])
         _inductor_config.shape_padding = False
@@ -1947,8 +1904,8 @@ def main() -> None:
             opt.load_state_dict(state)
         zero_grad_all()
         train_loader = DistributedTokenLoader(args.train_files, rank, world_size, device)
-    # (Online Hessian hooks already registered BEFORE compile — see above)
-    log0(f"online_hessian:hooks active, buffers={len(_oh_bufs)}, every={ONLINE_HESSIAN_EVERY} steps")
+    # Online Hessian: accumulated via separate uncompiled forward passes (no hooks needed)
+    _oh_hessians: dict[str, Tensor] | None = None  # accumulated Hessians
     swa_state: dict[str, Tensor] | None = None
     swa_count = 0
     ema_state = {name: t.detach().float().clone() for name, t in base_model.state_dict().items()}
@@ -1995,14 +1952,27 @@ def main() -> None:
             CastedLinear._qat_enabled = True
             log0(f"late_qat:enabled step:{step} scale:{scale:.4f}")
         zero_grad_all()
-        # Online Hessian: activate hooks for this step if conditions met
+        # Online Hessian: every N steps, run ONE uncompiled forward pass to accumulate
         _oh_accumulate_this_step = (
             step % ONLINE_HESSIAN_EVERY == 0
-            and scale < 0.8  # start after ~20% of training (warmdown-aware)
+            and scale < 0.8  # start after ~20% of training
         )
         if _oh_accumulate_this_step:
-            _oh_active[0] = True
-            _oh_hook_fired[0] = False
+            base_model.eval()
+            step_hessians = collect_hessians(
+                base_model, train_loader, args, device, grad_accum_steps,
+                num_batches=1, log_fn=None,
+            )
+            base_model.train()
+            if _oh_hessians is None:
+                _oh_hessians = step_hessians
+            else:
+                for k in step_hessians:
+                    if k in _oh_hessians:
+                        _oh_hessians[k] += step_hessians[k]
+                    else:
+                        _oh_hessians[k] = step_hessians[k]
+            online_hessian_count += 1
         train_loss = torch.zeros((), device=device)
         for micro_step in range(grad_accum_steps):
             x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
@@ -2010,13 +1980,6 @@ def main() -> None:
                 loss = model(x, y)
             train_loss += loss.detach()
             (loss * grad_scale).backward()
-        if _oh_accumulate_this_step:
-            _oh_active[0] = False
-            if _oh_hook_fired[0]:
-                online_hessian_count += 1
-            else:
-                if step <= 200 or step % 500 == 0:
-                    log0(f"WARNING: online hessian hooks did NOT fire at step {step}")
         train_loss /= grad_accum_steps
         frac = min(step / args.muon_momentum_warmup_steps, 1.0) if args.muon_momentum_warmup_steps > 0 else 1.0
         muon_momentum = (1 - frac) * args.muon_momentum_warmup_start + frac * args.muon_momentum
@@ -2077,30 +2040,29 @@ def main() -> None:
         f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
         f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB"
     )
-    # Finalize online Hessians: remove hooks, normalize, validate
-    for h in _oh_hooks:
-        h.remove()
-    _oh_hooks.clear()
-    if online_hessian_count > 0:
-        for k in _oh_bufs:
-            _oh_bufs[k] /= online_hessian_count
-    log0(f"online_hessian:finalized accumulations={online_hessian_count} buffers={len(_oh_bufs)}")
-    # Validate each buffer — reject if zero/nan/negative diagonal
+    # Finalize online Hessians: normalize and validate
     _oh_valid_bufs: dict[str, Tensor] = {}
-    for k, H in _oh_bufs.items():
-        d = torch.diag(H)
-        diag_sum = d.sum().item()
-        diag_min = d.min().item()
-        nonzero_count = int((d > 0).sum().item())
-        is_finite = bool(torch.isfinite(H).all().item())
-        is_valid = diag_sum > 1e-6 and diag_min >= 0 and is_finite and nonzero_count > 0
-        log0(f"online_hessian:buf {k}: diag_sum={diag_sum:.4f} diag_min={diag_min:.6f} "
-             f"nonzero={nonzero_count}/{H.shape[0]} finite={is_finite} valid={is_valid}")
-        if is_valid:
-            _oh_valid_bufs[k] = H
-        else:
-            log0(f"online_hessian:REJECTED {k} — will use post-training fallback")
-    log0(f"online_hessian:validated {len(_oh_valid_bufs)}/{len(_oh_bufs)} buffers")
+    if _oh_hessians is not None and online_hessian_count > 0:
+        for k in _oh_hessians:
+            _oh_hessians[k] /= online_hessian_count
+        log0(f"online_hessian:finalized accumulations={online_hessian_count} buffers={len(_oh_hessians)}")
+        # Validate each buffer
+        for k, H in _oh_hessians.items():
+            d = torch.diag(H)
+            diag_sum = d.sum().item()
+            diag_min = d.min().item()
+            nonzero_count = int((d > 0).sum().item())
+            is_finite = bool(torch.isfinite(H).all().item())
+            is_valid = diag_sum > 1e-6 and diag_min >= 0 and is_finite and nonzero_count > 0
+            log0(f"online_hessian:buf {k}: diag_sum={diag_sum:.4f} diag_min={diag_min:.6f} "
+                 f"nonzero={nonzero_count}/{H.shape[0]} finite={is_finite} valid={is_valid}")
+            if is_valid:
+                _oh_valid_bufs[k] = H
+            else:
+                log0(f"online_hessian:REJECTED {k} — will use post-training fallback")
+        log0(f"online_hessian:validated {len(_oh_valid_bufs)}/{len(_oh_hessians)} buffers")
+    else:
+        log0(f"online_hessian:NO accumulations collected (count={online_hessian_count}). Full post-training fallback.")
     # Apply EMA weights
     log0("ema:applying EMA weights")
     current_state = base_model.state_dict()
@@ -2135,29 +2097,46 @@ def main() -> None:
     # then merge with online-accumulated Hessians (Q/K/V, MLP up)
     hessians = None
     if FULL_GPTQ:
-        log0("gptq:collecting remaining Hessians (out_proj, mlp_down) from 16 calibration batches...")
-        torch.cuda.synchronize()
-        t_hess = time.perf_counter()
-        post_hessians = collect_hessians(
-            base_model, train_loader, args, device, grad_accum_steps,
-            num_batches=16,
-            log_fn=log0,
-        )
-        torch.cuda.synchronize()
-        log0(f"gptq:post_hessian_collection_time:{1000.0 * (time.perf_counter() - t_hess):.0f}ms")
-        # Merge: use online Hessians for Q/K/V/MLP-up, post-training for out_proj/MLP-down/CastedLinear
-        hessians = {}
-        n_online_used = 0
-        n_post_used = 0
-        for k, v in post_hessians.items():
-            if k in _oh_valid_bufs:
-                hessians[k] = _oh_valid_bufs[k]
-                n_online_used += 1
-                log0(f"gptq:using ONLINE hessian for {k} (n={online_hessian_count})")
-            else:
-                hessians[k] = v
-                n_post_used += 1
-        log0(f"gptq:merged hessians: {n_online_used} online (validated), {n_post_used} post-training")
+        if len(_oh_valid_bufs) > 0:
+            # Online hessians available — only collect the MISSING ones post-training
+            missing_keys = set()
+            # We need all 68 layer hessians. Online gives us what collect_hessians would.
+            # Do a tiny post-training pass for any layers NOT in _oh_valid_bufs
+            log0(f"gptq:online hessians cover {len(_oh_valid_bufs)} layers. Collecting remaining via 16-batch post-training...")
+            torch.cuda.synchronize()
+            t_hess = time.perf_counter()
+            post_hessians = collect_hessians(
+                base_model, train_loader, args, device, grad_accum_steps,
+                num_batches=16,
+                log_fn=log0,
+            )
+            torch.cuda.synchronize()
+            log0(f"gptq:post_hessian_collection_time:{1000.0 * (time.perf_counter() - t_hess):.0f}ms")
+            # Merge: prefer online, fallback to post-training
+            hessians = {}
+            n_online_used = 0
+            n_post_used = 0
+            for k, v in post_hessians.items():
+                if k in _oh_valid_bufs:
+                    hessians[k] = _oh_valid_bufs[k]
+                    n_online_used += 1
+                    log0(f"gptq:using ONLINE hessian for {k} (n={online_hessian_count})")
+                else:
+                    hessians[k] = v
+                    n_post_used += 1
+            log0(f"gptq:merged hessians: {n_online_used} online (validated), {n_post_used} post-training")
+        else:
+            # No valid online hessians — full post-training collection
+            log0("gptq:no valid online hessians — falling back to full 256-batch post-training collection")
+            torch.cuda.synchronize()
+            t_hess = time.perf_counter()
+            hessians = collect_hessians(
+                base_model, train_loader, args, device, grad_accum_steps,
+                num_batches=256,
+                log_fn=log0,
+            )
+            torch.cuda.synchronize()
+            log0(f"gptq:hessian_collection_time:{1000.0 * (time.perf_counter() - t_hess):.0f}ms")
     quant_result, quant_meta = mixed_quantize_int6(unbanked_sd, {"mlp", "attn"},
                                                     hessians=hessians, log_fn=log0)
     quant_buf = io.BytesIO()
