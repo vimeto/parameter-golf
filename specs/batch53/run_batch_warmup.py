@@ -105,8 +105,8 @@ class Hyperparameters:
     ttt_batch_seqs = int(os.environ.get("TTT_BATCH_SEQS", 32))
     ttt_grad_clip = float(os.environ.get("TTT_GRAD_CLIP", 1.0))
     batch_warmup_enabled = bool(int(os.environ.get("BATCH_WARMUP_ENABLED", "1")))
-    batch_warmup_stages = os.environ.get("BATCH_WARMUP_STAGES", "65536,131072,262144")  # comma-separated token counts
-    batch_warmup_fracs = os.environ.get("BATCH_WARMUP_FRACS", "0.05,0.12,0.22")  # wallclock fraction boundaries
+    batch_warmup_small = int(os.environ.get("BATCH_WARMUP_SMALL", 131_072))  # small batch tokens
+    batch_warmup_switch_frac = float(os.environ.get("BATCH_WARMUP_SWITCH_FRAC", 0.15))  # wallclock fraction to switch
 
 # --- Batched Newton-Schulz orthogonalization ---
 
@@ -1744,9 +1744,9 @@ def main() -> None:
     if IS_ROCM:
         _inductor_config = __import__("torch._inductor.config", fromlist=["config"])
         _inductor_config.shape_padding = False
-        compiled_model = torch.compile(base_model, mode="default", fullgraph=False)
+        compiled_model = torch.compile(base_model, mode="default", fullgraph=False, dynamic=True)
     else:
-        compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True)
+        compiled_model = torch.compile(base_model, dynamic=True, fullgraph=False)
     # No DDP -- Parallel Muon handles bank comms, non-bank params get manual all-reduce
     model: nn.Module = compiled_model
     log0("=" * 60)
@@ -1760,7 +1760,7 @@ def main() -> None:
     log0(f"  train_batch_tokens: {args.train_batch_tokens} (global batch)")
     log0(f"  compression: {_COMPRESSOR}")
     log0(f"  full_gptq: {FULL_GPTQ}")
-    log0(f"  batch_warmup: {args.batch_warmup_enabled} stages={args.batch_warmup_stages} fracs={args.batch_warmup_fracs} final={args.train_batch_tokens}")
+    log0(f"  batch_warmup: {args.batch_warmup_enabled} small={args.batch_warmup_small} switch_frac={args.batch_warmup_switch_frac} final={args.train_batch_tokens}")
     log0(f"  optimizer: muon_wd={args.muon_wd} adam_wd={args.adam_wd} beta2={args.beta2} grad_clip={args.grad_clip_norm}")
     log0(f"  leaky_relu_sq: True (LeakyReLU(0.5)²)")
     log0(f"  ema_decay: 0.997")
@@ -1877,27 +1877,32 @@ def main() -> None:
         initial_model_state = {name: tensor.detach().cpu().clone() for name, tensor in base_model.state_dict().items()}
         initial_optimizer_states = [copy.deepcopy(opt.state_dict()) for opt in optimizers]
         model.train()
-        for warmup_step in range(args.warmup_steps):
-            zero_grad_all()
-            for micro_step in range(grad_accum_steps):
-                x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
+        # Pre-compile both batch sizes: small (131K) and full (524K)
+        warmup_batches = [args.batch_warmup_small, args.train_batch_tokens] if args.batch_warmup_enabled else [args.train_batch_tokens]
+        steps_per_batch = max(1, args.warmup_steps // len(warmup_batches))
+        warmup_step_global = 0
+        for wb_tokens in warmup_batches:
+            log0(f"warmup:precompile batch_tokens={wb_tokens}")
+            for ws in range(steps_per_batch):
+                zero_grad_all()
+                x, y = train_loader.next_batch(wb_tokens, args.train_seq_len, 1)
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
                     warmup_loss = model(x, y)
-                (warmup_loss * grad_scale).backward()
-            # 3-phase warmup step
-            optimizer_muon.launch_reduce_scatters()
-            if distributed:
-                for p in replicated_params:
-                    if p.grad is not None:
-                        dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
-            optimizer_tok.step()
-            optimizer_scalar.step()
-            if optimizer_head is not None:
-                optimizer_head.step()
-            optimizer_muon.step()
-            zero_grad_all()
-            if args.warmup_steps <= 20 or (warmup_step + 1) % 10 == 0 or warmup_step + 1 == args.warmup_steps:
-                log0(f"warmup_step:{warmup_step + 1}/{args.warmup_steps}")
+                (warmup_loss).backward()
+                optimizer_muon.launch_reduce_scatters()
+                if distributed:
+                    for p in replicated_params:
+                        if p.grad is not None:
+                            dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
+                optimizer_tok.step()
+                optimizer_scalar.step()
+                if optimizer_head is not None:
+                    optimizer_head.step()
+                optimizer_muon.step()
+                zero_grad_all()
+                warmup_step_global += 1
+                if args.warmup_steps <= 20 or warmup_step_global % 10 == 0:
+                    log0(f"warmup_step:{warmup_step_global}/{args.warmup_steps}")
         base_model.load_state_dict(initial_model_state, strict=True)
         for opt, state in zip(optimizers, initial_optimizer_states, strict=True):
             opt.load_state_dict(state)
@@ -1948,30 +1953,22 @@ def main() -> None:
         if args.late_qat_threshold > 0 and scale < args.late_qat_threshold and not CastedLinear._qat_enabled and step > 100:
             CastedLinear._qat_enabled = True
             log0(f"late_qat:enabled step:{step} scale:{scale:.4f}")
-        # Batch warmup: 65K -> 131K -> 262K -> 524K (final)
+        # Batch warmup: 131K (first 15%) -> 524K (rest). grad_accum=1 always.
         if args.batch_warmup_enabled and max_wallclock_ms is not None:
-            stages = [int(s) for s in args.batch_warmup_stages.split(",")]
-            fracs = [float(f) for f in args.batch_warmup_fracs.split(",")]
             progress = elapsed_ms / max_wallclock_ms
-            current_batch_tokens = args.train_batch_tokens  # default to final
-            for stg, frc in zip(stages, fracs):
-                if progress < frc:
-                    current_batch_tokens = stg
-                    break
+            if progress < args.batch_warmup_switch_frac:
+                current_batch_tokens = args.batch_warmup_small
+            else:
+                current_batch_tokens = args.train_batch_tokens
         else:
             current_batch_tokens = args.train_batch_tokens
-        grad_accum_steps_now = max(1, current_batch_tokens // (world_size * args.train_seq_len))
-        current_batch_tokens = grad_accum_steps_now * world_size * args.train_seq_len
-        grad_scale_now = 1.0 / grad_accum_steps_now
         zero_grad_all()
         train_loss = torch.zeros((), device=device)
-        for micro_step in range(grad_accum_steps_now):
-            x, y = train_loader.next_batch(current_batch_tokens, args.train_seq_len, grad_accum_steps_now)
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                loss = model(x, y)
-            train_loss += loss.detach()
-            (loss * grad_scale_now).backward()
-        train_loss /= grad_accum_steps_now
+        x, y = train_loader.next_batch(current_batch_tokens, args.train_seq_len, 1)
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
+            loss = model(x, y)
+        train_loss += loss.detach()
+        loss.backward()
         frac = min(step / args.muon_momentum_warmup_steps, 1.0) if args.muon_momentum_warmup_steps > 0 else 1.0
         muon_momentum = (1 - frac) * args.muon_momentum_warmup_start + frac * args.muon_momentum
         for group in optimizer_muon.param_groups:
