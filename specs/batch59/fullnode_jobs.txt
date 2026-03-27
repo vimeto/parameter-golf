@@ -1,0 +1,12 @@
+# Full-node 8-GPU LUMI jobs for batch59.
+# Submit with TRAIN_SCRIPT=specs/batch59/run_research_ideas.py and MAX_WALLCLOCK_SECONDS=3000.
+#
+# Format:
+#   job_name RUN_ID=... RESEARCH_IDEA=... [extra KEY=VALUE ...]
+
+b59-ctl    RUN_ID=b59_control_fullnode  RESEARCH_IDEA=control
+b59-hnet   RUN_ID=b59_hnet_chunk4       RESEARCH_IDEA=hnet        HNET_CHUNK_SIZE=4
+b59-ssm    RUN_ID=b59_ssm_cumavg        RESEARCH_IDEA=ssm         SSM_LAYER_INDICES=8,9,10
+b59-ut     RUN_ID=b59_ut_step2          RESEARCH_IDEA=ut          UT_EXTRA_STEPS=2
+b59-mega   RUN_ID=b59_mega_softcap_ce   RESEARCH_IDEA=megakernel
+b59-rand   RUN_ID=b59_random96          RESEARCH_IDEA=random      RANDOM_FEATURE_DIM=96 RANDOM_LAYER_INDICES=8,9,10 RANDOM_SEED=1234
