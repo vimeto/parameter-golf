@@ -1,0 +1,11 @@
+# Quantization ablation sweep on saved no-MTP artifacts
+# Each config runs quantize -> decompress -> eval (fast, ~5-10 min per config)
+# Format: GPU_ID ENV_OVERRIDES
+0 TRAIN_SCRIPT=specs/batch55/quant_ablation.py RUN_ID=q_baseline BLOCK_SIZE=128 ACT_ORDER=0 GROUP_SIZE=0 MIXED_PRECISION=0
+1 TRAIN_SCRIPT=specs/batch55/quant_ablation.py RUN_ID=q_block256 BLOCK_SIZE=256 ACT_ORDER=0 GROUP_SIZE=0 MIXED_PRECISION=0
+2 TRAIN_SCRIPT=specs/batch55/quant_ablation.py RUN_ID=q_block256_actord BLOCK_SIZE=256 ACT_ORDER=1 GROUP_SIZE=0 MIXED_PRECISION=0
+3 TRAIN_SCRIPT=specs/batch55/quant_ablation.py RUN_ID=q_group64 BLOCK_SIZE=128 ACT_ORDER=0 GROUP_SIZE=64 MIXED_PRECISION=0
+4 TRAIN_SCRIPT=specs/batch55/quant_ablation.py RUN_ID=q_group128 BLOCK_SIZE=128 ACT_ORDER=0 GROUP_SIZE=128 MIXED_PRECISION=0
+5 TRAIN_SCRIPT=specs/batch55/quant_ablation.py RUN_ID=q_mixed_int8 BLOCK_SIZE=128 ACT_ORDER=0 GROUP_SIZE=0 MIXED_PRECISION=1
+6 TRAIN_SCRIPT=specs/batch55/quant_ablation.py RUN_ID=q_block256_actord_group128 BLOCK_SIZE=256 ACT_ORDER=1 GROUP_SIZE=128 MIXED_PRECISION=0
+7 TRAIN_SCRIPT=specs/batch55/quant_ablation.py RUN_ID=q_block256_actord_mixed BLOCK_SIZE=256 ACT_ORDER=1 GROUP_SIZE=0 MIXED_PRECISION=1
