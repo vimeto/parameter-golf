@@ -84,16 +84,17 @@ echo "TOKENIZER_PATH: ${TOKENIZER_PATH:-<default>}"
 echo ""
 
 TRAIN_SCRIPT="${TRAIN_SCRIPT:-records/our_submission/train_gpt.py}"
+SRUN_COMMON=(--ntasks=1 --export=ALL --kill-on-bad-exit=1 --wait=0)
 
 if [ "${NUM_GPUS}" -eq 1 ]; then
     # Single GPU training
     HIP_VISIBLE_DEVICES=0 \
-    srun --ntasks=1 --export=ALL \
+    srun "${SRUN_COMMON[@]}" \
         singularity exec "${SIFPYTORCH}" \
         ${PYTHON_PATH} -u "${TRAIN_SCRIPT}"
 else
     # Multi-GPU DDP training via torchrun
-    srun --ntasks=1 --export=ALL \
+    srun "${SRUN_COMMON[@]}" \
         singularity exec "${SIFPYTORCH}" \
         ${PYTHON_PATH} -m torch.distributed.run \
         --nproc_per_node="${NUM_GPUS}" \
