@@ -552,6 +552,23 @@ def chunk_repeat_expand(chunks: Tensor, chunk_size: int, orig_len: int) -> Tenso
         return chunks[:, :orig_len]
     expanded = chunks.unsqueeze(2).expand(-1, -1, chunk_size, -1)
     return expanded.reshape(chunks.size(0), -1, chunks.size(-1))[:, :orig_len]
+
+
+def chunk_prefix_mean(x: Tensor, chunk_size: int) -> Tensor:
+    if chunk_size <= 1:
+        return x
+    orig_len = x.size(1)
+    pad = (-orig_len) % chunk_size
+    if pad:
+        x = F.pad(x, (0, 0, 0, pad))
+    bsz, seqlen, dim = x.shape
+    x_chunks = x.reshape(bsz, seqlen // chunk_size, chunk_size, dim)
+    prefix = torch.cumsum(x_chunks.float(), dim=2)
+    counts = torch.arange(1, chunk_size + 1, device=x.device, dtype=torch.float32).view(1, 1, chunk_size, 1)
+    prefix = (prefix / counts).to(dtype=x.dtype)
+    return prefix.reshape(bsz, -1, dim)[:, :orig_len]
+
+
 class DistributedTokenLoader:
     def __init__(self, pattern: str, rank: int, world_size: int, device: torch.device):
         self.rank = rank
@@ -786,17 +803,9 @@ class ChunkPoolMixer(nn.Module):
         self.hnet_mix = nn.Parameter(torch.full((dim,), -2.0, dtype=torch.float32))
 
     def forward(self, x: Tensor) -> Tensor:
-        bsz, seqlen, dim = x.shape
-        if seqlen < 2:
+        if x.size(1) < 2:
             return torch.zeros_like(x)
-        k = self.chunk_size
-        pad = (k - (seqlen % k)) % k
-        if pad:
-            x_pad = torch.cat((x, x[:, -1:].expand(bsz, pad, dim)), dim=1)
-        else:
-            x_pad = x
-        pooled = x_pad.reshape(bsz, -1, k, dim).mean(dim=2)
-        upsampled = pooled.repeat_interleave(k, dim=1)[:, :seqlen, :]
+        upsampled = chunk_prefix_mean(x, self.chunk_size)
         gate = torch.sigmoid(self.hnet_mix.to(dtype=x.dtype))[None, None, :]
         return gate * (upsampled - x)
 
