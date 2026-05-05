@@ -1,12 +1,35 @@
-# Record candidate: PR #1797 + AWQ-lite top3 + LQER 60k on b180-tlr56 — val_bpb 1.06043 (seed=0)
+# Record candidate: PR #1797 + AWQ-lite top3 + LQER 60k on b180-tlr56 — 3-seed mean 1.06082
 
-Builds on the b180-tlr56 lineage (PR #1935) by stacking PR #1908's AWQ-lite mixed-precision GPTQ on top, plus a small LQER budget bump that uses cap margin freed by AWQ-lite's INT8 promotions.
+**Status update (3-seed): does not clear the 0.005-nat record-acceptance threshold.** Marking this PR as draft.
 
-Single seed (SEED=0): val_bpb 1.06043, val_loss 2.32062 nats. Beats PR #1855's 3-seed mean (1.06108 BPB, 2.32203 nats) by -0.00065 BPB / -0.00141 nats. Eval 599.3s, train 596.2s, both inside the 600s lane caps. Per-group lrzip artifact 15,947,372 bytes; total submission 15,982,182 (cap margin 17,818).
+original single-seed (SEED=0) headline was 1.06043 / 2.32062 nats — promising. The full 3-seed result is 1.06082 BPB mean / 2.32147 nats mean, an improvement of -0.00026 BPB / -0.00056 nats over PR #1855's 3-seed mean (1.06108, 2.32203). that is ~9× below the README's 0.005-nat threshold.
 
-i'm running additional seeds at this configuration on RunPod 8xH100 right now and will append SEED=314 and SEED=1234 numbers as soon as they finish. some of those runs are exploring slightly different hparam neighborhoods (LQER budget, AWQ top_k) to map the local landscape — the headline single-seed value is from the configuration documented below.
+Honest assessment: SEED=0 was a favourable draw from the seed-lottery distribution, not a recipe-level win over PR #1855. The single-seed value was within the noise envelope of either set; the 3-seed mean settles into the noise floor of #1855.
 
-This PR consolidates the test-plan items left open in PR #1935 (which promised SEED=0 / SEED=1234 multi-seed reference logs but couldn't complete them due to a pod crash on the original session). PR #1935 is being closed.
+The current SOTA candidate is PR #2135 (3-seed mean 1.05651, -0.00457 BPB / -0.01000 nats vs PR #1855), which clears the threshold by 2× — driven primarily by the token-only n-gram tilt (PR #1145 lineage) which this submission does not include. **Recommend evaluating PR #2135 ahead of this one.**
+
+This PR remains as a draft for documentation of the AWQ-lite + LQER + drop-M LoRA stacking experiment and as the missing H100 multi-seed continuation of PR #1935.
+
+## Results (3-seed, fixed seed set {0, 314, 1234})
+
+| Seed | Steps | ms/step | Train ms | Pre-quant BPB | Quant BPB | Post-TTT BPB | TTT eval s | Artifact bytes |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0    | 4831 | 123.4 | 596,153 | 1.06496396 | 1.07344835 | 1.06043138 | 599.3 | 15,947,372 |
+| 314  | 4819 | 123.7 | 596,078 | 1.06524848 | 1.07365670 | 1.06070308 | 572.3 | 15,947,099 |
+| 1234 | 4821 | 123.6 | 596,087 | 1.06562877 | 1.07432284 | 1.06132461 | 563.8 | 15,947,670 |
+| **Mean** | **4824** | **123.6** | **596,106** | **1.06528** | **1.07381** | **1.06082** | **578.5** | **15,947,380** |
+
+3-seed sample std: 0.00046 BPB / 0.00100 nats.
+
+All seeds within the 16 MB cap (max total 15,982,480) and 600s train + 600s eval lane caps (max train 596.2s, max eval 599.3s).
+
+## Statistical comparison vs PR #1855
+
+| Test | t-stat | df | p (one-tailed) | Verdict at p<0.25 | Clears 0.005-nat? |
+|---|---|---|---|---|---|
+| Welch's t-test (independent samples, unbiased σ) | -0.41 | ~2 | 0.36 | Does not pass | No |
+
+Improvement of -0.00056 nats is well within the noise envelope of either side (PR #1855 std 0.00090 BPB; ours 0.00046 BPB).
 
 ## Recipe (vs PR #1855)
 
@@ -23,21 +46,17 @@ This PR consolidates the test-plan items left open in PR #1935 (which promised S
 
 All other knobs identical to PR #1855.
 
-## Result
+## What we learned
 
-| Seed | Steps | ms/step | Train ms | Pre-quant BPB | Quant BPB | Post-TTT BPB | TTT eval s | Artifact bytes |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 0 | 4831 | 123.4 | 596,153 | 1.06496396 | 1.07344835 | 1.06043138 | 599.3 | 15,947,372 |
+The recipe stack DID deliver — just not as much as the SEED=0 single-seed implied:
 
-Total submission 15,982,182 / 16,000,000 = 99.89%, cap margin 17,818 bytes.
+1. AWQ-lite top_k=3 → ~-0.0001 to -0.0002 BPB at this stack on H100, smaller than the ~-0.00052 LUMI claim from the source experiment. The +0.00089 FIXED_SEQ_COMPILE shift assumed for LUMI→H100 transfer did not hold under DYNAMIC eval mode.
 
-## Why this should beat PR #1855's mean
+2. LQER 80k → 60k → ~-0.0001 BPB with AWQ. Margin freed (~20 KB) was useful but the BPB return was small.
 
-AWQ-lite top_k=3 with skip_embed=1 promotes the 3 highest-saliency 64-column groups per non-embedding tensor to INT8 within the same Hessian-based GPTQ solve. Saliency is `act_rms × |w|`, computed during the same calibration pass as the GPTQ Hessians. Skip-embed keeps tok_emb at INT7 to avoid bloating the artifact. Adds ~30s of GPTQ time inside `GPTQ_RESERVE_SECONDS`; no eval-time cost.
+3. Disk inductor cache hits partially across seeds. saved ~57s on TTT compile warmup and ~20s on phase 1 in-timer. cache invalidates more than expected — likely deserialized-weight identity affecting compile graph hashes.
 
-LQER budget 80k → 60k: AWQ-lite already reduces post-quant residual error on the top-K groups, so LQER's asymmetric rank-r correction has a smaller residual to capture. 60k bytes covers 15 tensors (vs 9 at 40k).
-
-`TORCHINDUCTOR_CACHE_DIR` on the persistent volume amortizes torch.compile across multi-seed runs (saves ~57s/run on TTT compile warmup, ~20s/run on phase-1 first-call cost in-timer). Doesn't change BPB.
+4. PR #2135's n-gram tilt is the dominant lever we don't have. their per-seed pre-TTT BPBs are in the same neighborhood as ours pre-quant; the closed-form per-token logit boost (PR #1145 / PR #1514 lineage) is essentially additive over a stack like this one — porting it would be the single highest-leverage next step.
 
 ## Compliance
 
@@ -45,29 +64,23 @@ Inherits from PR #1855 / PR #1797 lineage. AWQ-lite runs in the same calibration
 
 C1 causality, C2 normalization, C3 score-first TTT, C4 single L→R pass: all preserved. CaseOps byte sidecar accounting (PR #1729 / #1736) preserved; `ZERO_PUE_MARKERS=1` ships.
 
-## Test plan
-
-- [x] SEED=0 full retrain on H100
-- [x] Per-group lrzip artifact roundtrip verified lossless
-- [x] Total submission ≤ 16 MB
-- [ ] **SEED=314** at this configuration: running on RunPod 8xH100, will append
-- [ ] **SEED=1234** at this configuration: running on RunPod 8xH100, will append
-
 ## Hardware
 
-8x H100 80GB HBM3 SXM (RunPod), `vimetoivonen/pgolf:b180-tlr64` image, torch 2.9.1+cu129, FA3 via `flash_attn_interface`.
+8x H100 80GB HBM3 SXM (RunPod), `vimetoivonen/pgolf:b180-tlr64` image, torch 2.9.1+cu129, FA3 via `flash_attn_interface`. All three seeds within 596.2s train, max 599.3s eval.
 
 ## Lineage and credits
 
 - PR #1855 (merged) — base recipe and 9-hparam stack
 - PR #1797 — SparseAttnGate + LQER asymmetric rank-r
-- PR #1935 (closed; this PR continues that work) — QK_GAIN=6.0 + TTT_LORA_RANK=56 + drop-M LoRA
+- PR #1935 (closed) — QK_GAIN=6.0 + TTT_LORA_RANK=56 + drop-M LoRA — this PR is the H100 multi-seed continuation
 - PR #1908 — AWQ-lite mixed-precision GPTQ
-- PR #1729 / #1736 — CaseOps lossless tokenizer + byte sidecar
+- PR #1145 / PR #1514 — token-only n-gram tilt (NOT used in this PR; the dominant gap to SOTA)
+- PR #2135 — current SOTA candidate (1.05651 3-seed mean); recommend reviewing ahead of this PR
+- PR #1729 / PR #1736 — CaseOps lossless tokenizer + byte sidecar
 
 ## Files
 
 - `train_gpt.py` — full training/eval script, includes per-group lrzip serialize/deserialize ports from PR #1855 lineage helpers (PGRP magic + LRZI byte autodetect on read), AWQ-lite encoder/decoder paths
-- `submission.json` — recipe + per-seed metadata
-- `train_seed0.log` — full training + TTT eval log for SEED=0
+- `submission.json` — recipe + per-seed metadata + statistical analysis
+- `train_seed0.log`, `train_seed314.log`, `train_seed1234.log` — full per-seed training + TTT eval logs
 - `lossless_caps.py`, `prepare_caseops_data.py`, `requirements.txt`, `tokenizers/`
